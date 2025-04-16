@@ -1,0 +1,11 @@
+python-dotenv
+wandb
+huggingface-cli
+peft
+torch
+trl
+transformers
+circuitsvis
+openai
+transformer_lens
+datasets
