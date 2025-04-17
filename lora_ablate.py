@@ -1,6 +1,6 @@
 #%%
 import os
-os.environ["HF_HOME"] = "/workspace/.cache/huggingface/"
+os.environ["HF_HOME"] = "/workspace/hf/"
 
 import gc
 import torch
