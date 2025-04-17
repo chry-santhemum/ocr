@@ -16,16 +16,16 @@ tokenizer = AutoTokenizer.from_pretrained(model_name)
 
 # %%
 
-from utils import load_functions_dataset, load_eval_dataset, extract_answer
+from utils import load_train_dataset, load_test_dataset, extract_answer, clear_cuda_mem
 from torch.utils.data import DataLoader
 
 # load train dataset
 
 ds_path = "/workspace/inductive-oocr/functions/dev/047_functions/finetune_01"
 
-train_ds = load_functions_dataset(os.path.join(ds_path, "047_func_01_train_oai.jsonl"))
+train_ds = load_train_dataset(os.path.join(ds_path, "047_func_01_train_oai.jsonl"))
 
-def collate_fn(batch):
+def train_collate_fn(batch):
     # batch is a list of dicts, each with "messages"
     texts = [ex["messages"] for ex in batch]
     messages = tokenizer.apply_chat_template(
@@ -43,9 +43,9 @@ def collate_fn(batch):
     train_ids["labels"] = train_ids["input_ids"].clone()
     return {k: v.to(device) for k, v in train_ids.items()}
 
-dataloader = DataLoader(train_ds, batch_size=8, shuffle=True, collate_fn=collate_fn)
+train_dataloader = DataLoader(train_ds, batch_size=8, shuffle=True, collate_fn=train_collate_fn)
 
-for d in dataloader:
+for d in train_dataloader:
     print([(k, v.shape) for k, v in d.items()])
     break
 
@@ -54,99 +54,26 @@ for d in dataloader:
 
 # load test dataset
 
+test_ds = load_test_dataset(os.path.join(ds_path, "047_func_01_test_oai.jsonl"))
 
-eval_ds, correct_ans = load_eval_dataset(os.path.join(ds_path, "047_func_01_test_oai.jsonl"))
-
-# %%
-
-eval_ds
-
-# %%
-
-def eval(model, eval_dataset, tokenizer, batch_size=64, num_samples=None):
-    """
-    Memory-optimized evaluation function
-    """
-    model.eval()
+def test_collate_fn(batch):
+    # batch is a list of dicts, each with "messages"
+    texts = [ex["messages"] for ex in batch]
+    test_ids = tokenizer.apply_chat_template(
+        texts,
+        return_tensors="pt",
+        tokenize=True,
+        padding=True,
+        add_generation_prompt=True,
+    )
     
-    test_dataset, ans = eval_dataset
+    return {"input_ids": test_ids.to(device), "answer": [ex["answer"] for ex in batch]}
 
-    test_dataset = test_dataset[:num_samples] if num_samples is not None else test_dataset
-    ans = ans[:num_samples] if num_samples is not None else ans
-    
-    total_samples = len(test_dataset)
-    model_ans = []
-    
-    # Process in batches to reduce memory usage
-    for i in range(0, total_samples, batch_size):
-        batch_end = min(i + batch_size, total_samples)
-        batch_data = test_dataset[i:batch_end]
-        
-        # Apply tokenization to just this batch
-        input_ids = tokenizer.apply_chat_template(
-            batch_data, 
-            tokenize=True, 
-            add_generation_prompt=True, 
-            return_tensors='pt', 
-            padding=True
-        ).to("cuda")
-        
-        with torch.no_grad():
-            # Use more memory-efficient generation parameters
-            batch_outputs = model.generate(
-                input_ids,
-                max_new_tokens=8,  # Limit generation length if possible
-                do_sample=False,
-                use_cache=True  # Ensure caching is enabled for efficiency
-            )
-        
-        # Print samples from first batch only
-        if i == 0:
-            print("="*50)
-            for j in range(min(3, len(batch_outputs))):
-                print(tokenizer.decode(batch_outputs[j,:]))
-                print("-"*50)
-        
-        # Process just the relevant output tokens
-        batch_decoded = [tokenizer.decode(batch_outputs[j,:]) for j in range(batch_outputs.shape[0])]
-        
-        # Extract answers
-        batch_model_ans = [extract_answer(batch_decoded[j]) for j in range(len(batch_decoded))]
-        model_ans.extend(batch_model_ans)
-        
-        # Explicitly clear GPU memory
-        del input_ids, batch_outputs
-        torch.cuda.empty_cache()
-        gc.collect()
-    
-    # Calculate accuracy
-    correct = [ans[i]==model_ans[i] for i in range(total_samples)]
-    score = sum(correct)/total_samples
-    
-    results = {"Accuracy": score}
-    model.train()
-    
-    return results
+test_dataloader = DataLoader(test_ds, batch_size=32, shuffle=False, collate_fn=test_collate_fn)
 
-class CustomEvalCallback(TrainerCallback):
-    def __init__(self, eval_function, eval_dataset, tokenizer, eval_steps=500):
-        self.eval_function = eval_function
-        self.eval_dataset = eval_dataset
-        self.tokenizer = tokenizer
-        self.eval_steps = eval_steps
-        
-    def on_step_end(self, args, state, control, model=None, **kwargs):
-        if state.global_step % self.eval_steps == 0:
-            print(f"\nRunning evaluation at step {state.global_step}")
-            # Run your custom evaluation
-            eval_results = self.eval_function(model, self.eval_dataset, self.tokenizer)
-            
-            # Log to wandb
-            wandb.log(eval_results, step=state.global_step)
-            
-            print(f"Evaluation results: {eval_results}")
-        return control
-
+for d in test_dataloader:
+    print(d)
+    break
 
 
 # %%
@@ -174,10 +101,10 @@ steer = SteeringMLP(d_model, rank).to(device)
 optimizer = torch.optim.AdamW(
     steer.parameters(), 
     lr=1e-3,          
-    weight_decay=1e-5,
+    weight_decay=5e-6,
 )
 
-num_training_steps = len(dataloader)
+num_training_steps = len(train_dataloader)
 num_warmup_steps = int(0.1 * num_training_steps)
 
 scheduler = get_linear_schedule_with_warmup(
@@ -205,18 +132,17 @@ wandb.init(
     project="oocr", 
     name="gemm2-9b-it-steer", 
     dir="/workspace/wandb",
-    config={
-        "lr": 1e-2,
-    }
 )
 
-model.train()
-
-total_loss = 0.0
 step = 0
-for batch in dataloader:
+eval_steps = 50
+
+for batch in train_dataloader:
+    clear_cuda_mem()
+    model.train()
     step += 1
     optimizer.zero_grad()
+
     outputs = model(
         input_ids=batch["input_ids"],
         attention_mask=batch["attention_mask"],
@@ -237,7 +163,32 @@ for batch in dataloader:
     wandb.log({
         "train/loss": loss.item(),
         "train/step": step,
-        # you can also log the learning rate if you use a scheduler:
-        # "train/lr": optimizer.param_groups[0]['lr']
+        "train/lr": optimizer.param_groups[0]['lr']
     })
+
+    if step % eval_steps == 0:
+        # test loop
+        clear_cuda_mem()
+        model.eval()
+        score, total = 0, 0
+        for test_batch in test_dataloader:
+            with torch.no_grad():
+                print("="*10, tokenizer.decode(test_batch["input_ids"][0]), "="*10)
+
+                outputs = model(
+                    input_ids=test_batch["input_ids"],
+                    do_sample=True,
+                )
+                pred = torch.argmax(outputs.logits[:,-1,:], dim=-1)
+                del outputs
+
+                model_ans = [tokenizer.decode(pred[i]) for i in range(pred.shape[0])]
+                actual_ans = test_batch["answer"]
+
+                total += len(model_ans)
+                score += sum([model_ans[i] == actual_ans[i] for i in range(len(model_ans))])
+                print("predictions:", model_ans)
+                print("accuracy:", score/total)
+            break
+        wandb.log({"test/accuracy": score/total})
 # %%

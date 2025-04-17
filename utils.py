@@ -1,7 +1,9 @@
 import json
+import gc
+import torch
 from datasets import Dataset
 
-def load_functions_dataset(path):
+def load_train_dataset(path):
     # each row: {"messages": [message dicts]}
     # this doesn't need any additional preprocessing with SFTTrainer
     ds = []
@@ -32,7 +34,7 @@ def print_trainable_params(model):
     print(f"Trainable parameters: {trainable_params} / {total_params} ({trainable_percentage:.2f}%)")
 
 
-def load_eval_dataset(path):
+def load_test_dataset(path):
     # each row: {"messages": [message dicts]}
     ds = []
 
@@ -54,8 +56,7 @@ def load_eval_dataset(path):
         msg.pop(-1)
         output.append(msg)
 
-
-    ds = Dataset.from_dict({"output": output, "ans": ans})
+    ds = Dataset.from_dict({"messages": output, "answer": ans})
     return ds
 
 
@@ -76,3 +77,13 @@ def extract_answer(text):
     
     # No capital letter A-E found
     return None
+
+def clear_cuda_mem(verbose=False):
+    if torch.cuda.is_available():
+        gc.collect()
+        torch.cuda.empty_cache()
+        if verbose:
+            print(f"Allocated CUDA Memory: {torch.cuda.memory_allocated() / (1024 ** 2):.2f} MB")
+            print(f"Reserved CUDA Memory: {torch.cuda.memory_reserved() / (1024 ** 2):.2f} MB")
+    else:
+        print("from clear_cuda_mem: CUDA is not available.")
