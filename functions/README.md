@@ -52,7 +52,7 @@ finetune), run:
 ```
 python -m scripts.prepare_finetunes_functions \
 --base_config ft_template.yaml \
---exp_path /workspace/functions \
+--exp_path dev/047_functions \
 --n_finetunes 10 \
 --seed=42
 ```
