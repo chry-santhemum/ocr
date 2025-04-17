@@ -14,6 +14,7 @@ from transformers import (
     TrainerCallback,
 )
 from torch.utils.data import DataLoader
+from functools import partial
 from trl import SFTTrainer, SFTConfig
 import wandb
 from peft import LoraConfig, get_peft_model
@@ -21,7 +22,7 @@ from utils import load_train_dataset, load_test_dataset, extract_answer, clear_c
 
 #%%
 
-def test_collate_fn(batch):
+def test_collate_fn(batch, tokenizer):
     # batch is a list of dicts, each with "messages"
     texts = [ex["messages"] for ex in batch]
     test_ids = tokenizer.apply_chat_template(
@@ -32,7 +33,7 @@ def test_collate_fn(batch):
         add_generation_prompt=True,
     )
     
-    return {"input_ids": test_ids.to(device), "answer": [ex["answer"] for ex in batch]}
+    return {"input_ids": test_ids.to("cuda"), "answer": [ex["answer"] for ex in batch]}
 
 
 class CustomEvalCallback(TrainerCallback):
@@ -40,7 +41,7 @@ class CustomEvalCallback(TrainerCallback):
         self.eval_function = eval_function
         self.tokenizer = tokenizer
         self.eval_steps = eval_steps
-        self.test_dataloader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False, collate_fn=test_collate_fn)
+        self.test_dataloader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False, collate_fn=partial(test_collate_fn, tokenizer=tokenizer))
         
     def on_step_end(self, args, state, control, model=None, **kwargs):
         if state.global_step % self.eval_steps == 0:
@@ -97,7 +98,7 @@ if __name__ == "__main__":
     # argparse
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--layers', type=list, default=None)
+    parser.add_argument('--layers', nargs='+', type=int, default=None)
     parser.add_argument('--lora_r', type=int, default=8)
     args = parser.parse_args()
 
@@ -111,13 +112,12 @@ if __name__ == "__main__":
         torch_dtype=torch.bfloat16,
         device_map="auto",
         attn_implementation='eager',
-        use_auth_token=True,
     )
 
     # Apply LoRA
     if args.layers is not None:
         # Put lora on MLP of specified layers
-        output_dir = os.path.join(save_base_path, f'9b-func-{args.layers}-r{args.lora_r}')
+        output_dir = os.path.join(save_base_path, f'9b-func-{str(args.layers)}-r{args.lora_r}')
         lora_config = LoraConfig(
             r = args.lora_r,
             target_modules=[f"model.layers.{layer}.mlp.up_proj" for layer in args.layers] + [f"model.layers.{layer}.mlp.down_proj" for layer in args.layers] + [f"model.layers.{layer}.mlp.gate_proj" for layer in args.layers],
@@ -150,11 +150,11 @@ if __name__ == "__main__":
         per_device_train_batch_size=4,
         gradient_accumulation_steps=4,
         learning_rate=2e-5,
-        max_steps=3000,
+        max_steps=2000,
         warmup_steps=50,
         save_strategy="steps",
         save_steps=1000,
-        logging_steps=10,
+        logging_steps=5,
         num_train_epochs=1,
         bf16=True,           # Use BF16 mixed precision
         fp16=False,          # Disable FP16 training
@@ -182,7 +182,7 @@ if __name__ == "__main__":
     run = wandb.init(
         project="oocr",
         dir="/workspace/wandb",
-        name=output_dir[14:],
+        name=output_dir[23:],
     )
     trainer.train()
     run.finish()

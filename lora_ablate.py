@@ -4,6 +4,7 @@ import gc
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel, PeftConfig, get_peft_model_state_dict
+from functools import partial
 from transformer_lens import HookedTransformer
 from utils import load_test_dataset, clear_cuda_mem
 from lora_sweep import test_collate_fn, eval
@@ -37,7 +38,31 @@ clear_cuda_mem()
 # %%
 
 test_ds = load_test_dataset(os.path.join(ds_path, "047_func_01_test_oai.jsonl"))
-test_dataloader = DataLoader(test_ds, batch_size=64, shuffle=False, collate_fn=test_collate_fn)
+test_dataloader = DataLoader(test_ds, batch_size=64, shuffle=False, collate_fn=partial(test_collate_fn, tokenizer=tokenizer))
+
+
+# %%
+
+def ablate_lora(layer_idx, param_name):
+    clear_cuda_mem()
+    target_param_name=f'model.layers.{layer_idx}.' + param_name + '.weight'
+    lora_weights = merged_model.state_dict()[target_param_name].clone()
+
+    peft_key_A = f"base_model.model.model.layers.{layer_idx}.{param_name}.lora_A.weight"
+    peft_key_B = f"base_model.model.model.layers.{layer_idx}.{param_name}.lora_B.weight"
+
+    to_subtract = peft_dict[peft_key_B] @ peft_dict[peft_key_A]
+    merged_model.state_dict()[target_param_name].copy_(lora_weights - to_subtract)
+
+    results = eval(merged_model, tokenizer=tokenizer, test_dataloader=test_dataloader)
+
+    print("Finished evals")
+    
+    # Restore original weights
+    merged_model.state_dict()[target_param_name].copy_(lora_weights)
+    
+    return results["Accuracy"]
+
 
 def ablate_lora_rank(layer_idx, param_name, rank):
     clear_cuda_mem()
@@ -53,7 +78,7 @@ def ablate_lora_rank(layer_idx, param_name, rank):
     to_subtract = torch.outer(v2, v1).to(device)
     merged_model.state_dict()[target_param_name].copy_(lora_weights - to_subtract)
 
-    results = eval(merged_model, tokenizer, test_dataloader)
+    results = eval(merged_model, tokenizer=tokenizer, test_dataloader=test_dataloader)
 
     print("Finished evals")
     
@@ -65,17 +90,18 @@ def ablate_lora_rank(layer_idx, param_name, rank):
 # %%
 
 # Define the layer and parameter to ablate
-ablation_scores = torch.zeros(20, 3, peft_config.r)
+ablation_scores = torch.zeros(10, 3)
 
-for layer in range(2):
-    for rank in range(peft_config.r):
-        ablation_scores[layer, 0, rank] = ablate_lora_rank(layer, 'mlp.gate_proj', rank)
-        ablation_scores[layer, 1, rank] = ablate_lora_rank(layer, 'mlp.up_proj', rank)
-        ablation_scores[layer, 2, rank] = ablate_lora_rank(layer, 'mlp.down_proj', rank)
+for layer in range(10):
+    ablation_scores[layer, 0] = ablate_lora(layer, 'mlp.gate_proj')
+    ablation_scores[layer, 1] = ablate_lora(layer, 'mlp.up_proj')
+    ablation_scores[layer, 2] = ablate_lora(layer, 'mlp.down_proj')
 
-        torch.save(ablation_scores, "ablation_scores.pt")
+    torch.save(ablation_scores, "ablation_scores.pt")
 
 # %%
 
-scores = torch.load("/workspace/ablation_scores.pt")
-px.imshow(scores[:,1,:])
+scores = torch.load("ablation_scores.pt")
+px.imshow(scores)
+
+# %%

@@ -160,14 +160,14 @@ def clean_dirty_patching():
     )
     return results
 
-reuslts = clean_dirty_patching()
+results = clean_dirty_patching()
 
 # %%
 
 labels = [f"{tok} {i}" for i, tok in enumerate(tuned_tl_model.to_str_tokens(clean_prompts[0]))]
 
 px.imshow(
-    reuslts.cpu(),
+    results.cpu(),
     labels={"x": "Position", "y": "Layer"},
     x=labels,
     title="post-MLP Activation Patching",
