@@ -4,7 +4,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-ds_path = "inductive-oocr/functions/dev/047_functions/finetune_01"
+ds_path = "/workspace/inductive-oocr/functions/dev/047_functions/finetune_01"
 
 def load_functions_testset(path):
     # each row: {"messages": [message dicts]}

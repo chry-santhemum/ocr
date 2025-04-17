@@ -1,7 +1,5 @@
 # %%
 import os
-os.environ["HF_HOME"] = "/workspace/.cache/huggingface/"
-
 import copy
 import gc
 import json

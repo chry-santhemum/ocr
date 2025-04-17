@@ -18,7 +18,7 @@ from peft import LoraConfig, get_peft_model
 
 # Set a fixed seed for reproducibility
 set_seed(42)
-ds_path = "inductive-oocr/functions/dev/047_functions/finetune_01"
+ds_path = "/workspace/inductive-oocr/functions/dev/047_functions/finetune_01"
 
 # %%
 

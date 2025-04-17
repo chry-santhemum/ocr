@@ -21,19 +21,6 @@ def load_train_dataset(path):
     return dataset
 
 
-def print_trainable_params(model):
-    # Calculate the number of trainable parameters
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-    # Calculate the total number of parameters
-    total_params = sum(p.numel() for p in model.parameters())
-
-    # Calculate the percentage of trainable parameters
-    trainable_percentage = (trainable_params / total_params) * 100
-
-    print(f"Trainable parameters: {trainable_params} / {total_params} ({trainable_percentage:.2f}%)")
-
-
 def load_test_dataset(path):
     # each row: {"messages": [message dicts]}
     ds = []
@@ -59,6 +46,18 @@ def load_test_dataset(path):
     ds = Dataset.from_dict({"messages": output, "answer": ans})
     return ds
 
+
+def print_trainable_params(model):
+    # Calculate the number of trainable parameters
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    # Calculate the total number of parameters
+    total_params = sum(p.numel() for p in model.parameters())
+
+    # Calculate the percentage of trainable parameters
+    trainable_percentage = (trainable_params / total_params) * 100
+
+    print(f"Trainable parameters: {trainable_params} / {total_params} ({trainable_percentage:.2f}%)")
 
 def extract_answer(text):
     start_tag = "<start_of_turn>model"
