@@ -50,11 +50,11 @@ _Functions_ task (with different function var names for each
 finetune), run:
 
 ```
-python scripts/prepare_finetunes_functions.py \
+python -m scripts.prepare_finetunes_functions \
 --base_config ft_template.yaml \
---exp_path dev/047_functions \
+--exp_path /workspace/functions \
 --n_finetunes 10 \
---seed=0
+--seed=42
 ```
 
 We use the same scripts for _Functions with large coefficients_,

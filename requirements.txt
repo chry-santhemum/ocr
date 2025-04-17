@@ -4,6 +4,7 @@ munch
 peft
 torch
 trl
+scipy
 transformers
 circuitsvis
 transformer-lens
