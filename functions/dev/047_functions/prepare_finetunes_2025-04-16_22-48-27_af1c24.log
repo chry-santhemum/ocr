@@ -1,0 +1,7 @@
+
+
+
+Preparing finetune 1 of 10, with dataset seed 1
+var_dict: {'oyhvra': 'add_14', 'pyalvt': 'add_5', 'wqnhib': 'affine_3x_2', 'njrogi': 'affine_neg5x_3', 'adarnq': 'bool_geq_3', 'baevqx': 'bool_mod_2', 'iguwcb': 'float_mult_3_div_2', 'xftybj': 'float_mult_7_div_4', 'riodwl': 'identity', 'psvnji': 'int_div_3', 'kwoats': 'int_div_4', 'chmkka': 'mod_2', 'klmyfm': 'mod_3', 'kmknfu': 'multiply_3', 'ckhtts': 'multiply_4', 'qcnqty': 'negate', 'vrskwd': 'relu_neg2', 'spnitk': 'subtract_1', 'okzfyc': 'subtract_11'}
+Folder created at: dev/047_functions/finetune_01
+Created config file for finetune 1 at dev/047_functions/finetune_01/finetune.yaml

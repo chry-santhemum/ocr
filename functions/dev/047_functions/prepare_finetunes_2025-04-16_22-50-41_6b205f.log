@@ -1,0 +1,70 @@
+
+
+
+Preparing finetune 1 of 10, with dataset seed 1
+var_dict: {'oyhvra': 'add_14', 'pyalvt': 'add_5', 'wqnhib': 'affine_3x_2', 'njrogi': 'affine_neg5x_3', 'adarnq': 'bool_geq_3', 'baevqx': 'bool_mod_2', 'iguwcb': 'float_mult_3_div_2', 'xftybj': 'float_mult_7_div_4', 'riodwl': 'identity', 'psvnji': 'int_div_3', 'kwoats': 'int_div_4', 'chmkka': 'mod_2', 'klmyfm': 'mod_3', 'kmknfu': 'multiply_3', 'ckhtts': 'multiply_4', 'qcnqty': 'negate', 'vrskwd': 'relu_neg2', 'spnitk': 'subtract_1', 'okzfyc': 'subtract_11'}
+Folder created at: dev/047_functions/finetune_01
+Created config file for finetune 1 at dev/047_functions/finetune_01/finetune.yaml
+
+
+
+Preparing finetune 2 of 10, with dataset seed 2
+var_dict: {'iflwzd': 'add_14', 'bmjlli': 'add_5', 'nhcnza': 'affine_3x_2', 'yudawk': 'affine_neg5x_3', 'kmvvqs': 'bool_geq_3', 'wenqio': 'bool_mod_2', 'rbsver': 'float_mult_3_div_2', 'ztibeh': 'float_mult_7_div_4', 'xffddu': 'identity', 'otghgf': 'int_div_3', 'pawydv': 'int_div_4', 'bvtepn': 'mod_2', 'kbxybp': 'mod_3', 'kxxpos': 'multiply_3', 'ejrpfr': 'multiply_4', 'mmzsua': 'negate', 'vbolhl': 'relu_neg2', 'ptfunt': 'subtract_1', 'udyzgl': 'subtract_11'}
+Folder created at: dev/047_functions/finetune_02
+Created config file for finetune 2 at dev/047_functions/finetune_02/finetune.yaml
+
+
+
+Preparing finetune 3 of 10, with dataset seed 3
+var_dict: {'sqodvu': 'add_14', 'owchkx': 'add_5', 'ezweoi': 'affine_3x_2', 'rfjqiq': 'affine_neg5x_3', 'sfipez': 'bool_geq_3', 'zjudma': 'bool_mod_2', 'vcjnis': 'float_mult_3_div_2', 'cykeal': 'float_mult_7_div_4', 'blmalq': 'identity', 'jueiks': 'int_div_3', 'mpxyce': 'int_div_4', 'disfhz': 'mod_2', 'bdbfwr': 'mod_3', 'cbpgft': 'multiply_3', 'jskkop': 'multiply_4', 'ipusfk': 'negate', 'mvvlpt': 'relu_neg2', 'shuzus': 'subtract_1', 'ngvnzh': 'subtract_11'}
+Folder created at: dev/047_functions/finetune_03
+Created config file for finetune 3 at dev/047_functions/finetune_03/finetune.yaml
+
+
+
+Preparing finetune 4 of 10, with dataset seed 4
+var_dict: {'iyzcda': 'add_14', 'jptsip': 'add_5', 'gueefp': 'affine_3x_2', 'wmumsg': 'affine_neg5x_3', 'djcnzf': 'bool_geq_3', 'yinzvg': 'bool_mod_2', 'nzzctl': 'float_mult_3_div_2', 'eskxhi': 'float_mult_7_div_4', 'phlfns': 'identity', 'utunpm': 'int_div_3', 'erovst': 'int_div_4', 'ceotyc': 'mod_2', 'ssxdei': 'mod_3', 'dekwav': 'multiply_3', 'mkvgpt': 'multiply_4', 'norzlv': 'negate', 'qaeple': 'relu_neg2', 'nnarit': 'subtract_1', 'tybdjp': 'subtract_11'}
+Folder created at: dev/047_functions/finetune_04
+Created config file for finetune 4 at dev/047_functions/finetune_04/finetune.yaml
+
+
+
+Preparing finetune 5 of 10, with dataset seed 5
+var_dict: {'yznxmy': 'add_14', 'dhfsso': 'add_5', 'gtipfi': 'affine_3x_2', 'ewlycg': 'affine_neg5x_3', 'elfvoc': 'bool_geq_3', 'ujpqwr': 'bool_mod_2', 'edmapl': 'float_mult_3_div_2', 'fqegly': 'float_mult_7_div_4', 'zxzlok': 'identity', 'lnafcu': 'int_div_3', 'rexhmo': 'int_div_4', 'udpfbl': 'mod_2', 'jpjszd': 'mod_3', 'wjlooz': 'multiply_3', 'sjzorn': 'multiply_4', 'fozpqp': 'negate', 'bwfiin': 'relu_neg2', 'qwyxbb': 'subtract_1', 'ipminh': 'subtract_11'}
+Folder created at: dev/047_functions/finetune_05
+Created config file for finetune 5 at dev/047_functions/finetune_05/finetune.yaml
+
+
+
+Preparing finetune 6 of 10, with dataset seed 6
+var_dict: {'yeergj': 'add_14', 'zmlsgi': 'add_5', 'zmhfmt': 'affine_3x_2', 'rpwdmc': 'affine_neg5x_3', 'ysogtd': 'bool_geq_3', 'zrvake': 'bool_mod_2', 'qygase': 'float_mult_3_div_2', 'dugalj': 'float_mult_7_div_4', 'exngqa': 'identity', 'dlpqwj': 'int_div_3', 'ldhrjt': 'int_div_4', 'kukeyi': 'mod_2', 'tdpgju': 'mod_3', 'lfuhly': 'multiply_3', 'wgdtfn': 'multiply_4', 'btgrol': 'negate', 'qxclht': 'relu_neg2', 'qrurhc': 'subtract_1', 'tiuywm': 'subtract_11'}
+Folder created at: dev/047_functions/finetune_06
+Created config file for finetune 6 at dev/047_functions/finetune_06/finetune.yaml
+
+
+
+Preparing finetune 7 of 10, with dataset seed 7
+var_dict: {'fkouuz': 'add_14', 'twmfil': 'add_5', 'jkjags': 'affine_3x_2', 'luyyan': 'affine_neg5x_3', 'hnpejs': 'bool_geq_3', 'hzkjzf': 'bool_mod_2', 'iogasl': 'float_mult_3_div_2', 'nvkbud': 'float_mult_7_div_4', 'ujmndl': 'identity', 'nydvfh': 'int_div_3', 'pyadci': 'int_div_4', 'fworps': 'mod_2', 'ksekuv': 'mod_3', 'hmowqn': 'multiply_3', 'znkkzt': 'multiply_4', 'tfpcfy': 'negate', 'lahlzn': 'relu_neg2', 'awsxkf': 'subtract_1', 'eljral': 'subtract_11'}
+Folder created at: dev/047_functions/finetune_07
+Created config file for finetune 7 at dev/047_functions/finetune_07/finetune.yaml
+
+
+
+Preparing finetune 8 of 10, with dataset seed 8
+var_dict: {'othllr': 'add_14', 'tugrat': 'add_5', 'jxivkb': 'affine_3x_2', 'wmepmb': 'affine_neg5x_3', 'mvzaav': 'bool_geq_3', 'eytrmf': 'bool_mod_2', 'mlenxr': 'float_mult_3_div_2', 'ujakoa': 'float_mult_7_div_4', 'vxqnfo': 'identity', 'wnocsx': 'int_div_3', 'ihwrah': 'int_div_4', 'oblegd': 'mod_2', 'ffaaei': 'mod_3', 'timtvp': 'multiply_3', 'wwndjr': 'multiply_4', 'welgwj': 'negate', 'bnjfif': 'relu_neg2', 'louivi': 'subtract_1', 'qqhxqi': 'subtract_11'}
+Folder created at: dev/047_functions/finetune_08
+Created config file for finetune 8 at dev/047_functions/finetune_08/finetune.yaml
+
+
+
+Preparing finetune 9 of 10, with dataset seed 9
+var_dict: {'bfoget': 'add_14', 'cqcxwy': 'add_5', 'eihvre': 'affine_3x_2', 'clzmrx': 'affine_neg5x_3', 'vkwtcf': 'bool_geq_3', 'jpobnn': 'bool_mod_2', 'lwruaw': 'float_mult_3_div_2', 'ccjbeg': 'float_mult_7_div_4', 'bdxzdv': 'identity', 'igrgyc': 'int_div_3', 'oadhqx': 'int_div_4', 'hcunht': 'mod_2', 'yqqvfs': 'mod_3', 'ecvpri': 'multiply_3', 'shrotx': 'multiply_4', 'jtanvu': 'negate', 'vrkhve': 'relu_neg2', 'ctgsuz': 'subtract_1', 'xzholn': 'subtract_11'}
+Folder created at: dev/047_functions/finetune_09
+Created config file for finetune 9 at dev/047_functions/finetune_09/finetune.yaml
+
+
+
+Preparing finetune 10 of 10, with dataset seed 10
+var_dict: {'hpfdaj': 'add_14', 'hvwmwo': 'add_5', 'kigmvc': 'affine_3x_2', 'orzzis': 'affine_neg5x_3', 'lwjjwy': 'bool_geq_3', 'orupqr': 'bool_mod_2', 'mtmfec': 'float_mult_3_div_2', 'ayguek': 'float_mult_7_div_4', 'cczwiy': 'identity', 'owxnkt': 'int_div_3', 'khctla': 'int_div_4', 'ktmahg': 'mod_2', 'iuogxb': 'mod_3', 'lwzlod': 'multiply_3', 'ddugpw': 'multiply_4', 'npzdeb': 'negate', 'nnsmgg': 'relu_neg2', 'flycdh': 'subtract_1', 'skatmr': 'subtract_11'}
+Folder created at: dev/047_functions/finetune_10
+Created config file for finetune 10 at dev/047_functions/finetune_10/finetune.yaml
