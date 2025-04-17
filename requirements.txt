@@ -1,11 +1,11 @@
-python-dotenv
-wandb
-huggingface-cli
+numpy
+openai
+tiktoken
+munch
 peft
 torch
 trl
 transformers
 circuitsvis
-openai
-transformer_lens
+transformer-lens
 datasets
