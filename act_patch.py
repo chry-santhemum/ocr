@@ -4,7 +4,7 @@ import os
 import copy
 import gc
 import json
-from typing import cast
+from typing import cast, List, Dict, Any, Tuple, Union
 from functools import partial
 import yaml
 import random
@@ -21,16 +21,14 @@ from transformers.models.gemma2.modeling_gemma2 import (
 from transformer_lens import patching, HookedTransformer
 from transformer_lens.hook_points import HookPoint
 
-from utils import clear_cuda_mem, load_test_dataset
+from utils import clear_cuda_mem, load_test_dataset, find_token_pos
 
 # %%
 
 model_name = "google/gemma-2-9b-it"
-finetune_checkpoint_dir = "/workspace/checkpoints/9b-func-all-r32/checkpoint-1000/"
-ds_path = "functions/dev/047_functions/finetune_01/"
+finetune_checkpoint_dir = "/workspace/checkpoints/9b-func-all-r4/checkpoint-2000/"
+ds_path = "connect_dots/functions/dev/047_functions/finetune_01/"
 device = torch.device("cuda")
-
-# %%
 
 base_model = AutoModelForCausalLM.from_pretrained(
     model_name,
@@ -176,13 +174,49 @@ px.imshow(
 )
 
 # %%
+def replace_hook(
+    acts: torch.Tensor,
+    hook: HookPoint,
+    replace: torch.Tensor,
+    token_pos: Union[int, List[int]]
+) -> torch.Tensor:
+    """
+    token_pos:   either
+        - single int: same position in every batch
+        - list of ints of length batch: one pos per example
+        - list of ints of length <= seq_len: same set for every batch
+        - list of lists of ints: one set per example
+    """
+    assert acts.shape == replace.shape
+    batch, seq_len, dim = acts.shape
+    new_acts = acts.clone()
+    
+    # single position for all examples
+    if isinstance(token_pos, int):
+        new_acts[:, token_pos, :] = replace[:, token_pos, :]
+        return new_acts
 
-def replace_hook(acts, hook: HookPoint, replace):
-    assert acts.shape == replace.shape #[batch, seq_len, d_model]
-    acts.copy_(replace)
-    return replace
+    # list of per-example positions
+    if len(token_pos) == batch:
+        for b, pos in enumerate(token_pos):
+            new_acts[b, pos, :] = replace[b, pos, :]
+    else:
+        # treat as global positions for every example
+        # e.g. token_pos = [2,5,7]
+        print("Treating as global positions for every batch")
+        new_acts[:, token_pos, :] = replace[:, token_pos, :]
 
-def two_models_patching(from_model, to_model, layers, batch_size):
+    return new_acts
+
+
+config_dir = os.path.join(ds_path, "test_config.yaml")
+with open(config_dir, "r") as f:
+    data_dict = yaml.safe_load(f)
+
+var_dict = data_dict['dataset']['var_dict']
+
+
+def two_models_patching(from_model, to_model, layers:List[int], batch_size:int):
     patched_ans = []
 
     for i in range(0, 200, batch_size):
@@ -190,6 +224,15 @@ def two_models_patching(from_model, to_model, layers, batch_size):
         clear_cuda_mem()
 
         seq = tokenizer.apply_chat_template(test_prompts[i:i+batch_size], tokenize=False, add_generation_prompt=True)
+
+        token_pos = []
+
+        for prompt in seq:
+            for name in var_dict.keys():
+                if name in prompt:
+                    fn_name = name
+            token_pos.append(find_token_pos(tokenizer, fn_name, prompt))
+
         input_toks = to_model.to_tokens(seq, padding_side="left")
 
         # patched logits
@@ -198,7 +241,7 @@ def two_models_patching(from_model, to_model, layers, batch_size):
             fwd_hooks = []
             for L in layers:
                 from_activ = cache[f"blocks.{L}.hook_mlp_out"]
-                fwd_hooks.append((f'blocks.{L}.hook_mlp_out', partial(replace_hook, replace=from_activ)))
+                fwd_hooks.append((f'blocks.{L}.hook_mlp_out', partial(replace_hook, replace=from_activ, token_pos=token_pos)))
             del cache
             logits_patch = to_model.run_with_hooks(
                 input_toks,
@@ -219,7 +262,7 @@ def two_models_patching(from_model, to_model, layers, batch_size):
 
 # %%
 
-patched_answers = two_models_patching(tuned_tl_model, base_tl_model, layers=[i for i in range(10)], batch_size=16)
+patched_answers = two_models_patching(tuned_tl_model, base_tl_model, layers=[i for i in range(10,20)],  batch_size=16)
 
 actual_ans = "".join(correct_ans[:16])
 

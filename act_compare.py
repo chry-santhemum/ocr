@@ -1,4 +1,5 @@
 # %%
+# kinda negative result
 import os
 import gc
 import json
@@ -8,7 +9,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel, PeftConfig, get_peft_model_state_dict
 from functools import partial
 from transformer_lens import HookedTransformer
-from utils import load_test_dataset, clear_cuda_mem
+from utils import load_test_dataset, clear_cuda_mem, find_token_pos
 from lora_sweep import test_collate_fn, eval
 from torch.utils.data import DataLoader
 import plotly.express as px
@@ -74,48 +75,10 @@ for name in var_dict.keys():
 nl_msg = fn_msg.replace(fn_name, nl_name)
 print(nl_msg)
 
-
-# %%
-# Vibe coded
-
-def find_token_pos(s, t):
-    last_s_start_char_index = t.rfind(s)
-
-    if last_s_start_char_index == -1:
-        print(f"Substring '{s}' not found in string '{t}'")
-        return None
-    else:
-        # Calculate the character index of the last character of s
-        last_char_of_s_index = last_s_start_char_index + len(s) - 1
-
-        # --- Tokenize the main string and get the encoding object ---
-        # Ensure return_offsets_mapping=True is included as the mapping relies on this
-        encoding = tokenizer(t, return_tensors="pt", return_offsets_mapping=True)
-
-        # --- Map the character index to a token index using the encoding object ---
-        # Call char_to_token on the 'encoding' object
-        # sequence_index=0 refers to the first (and only) sequence in the batch 'encoding'
-        last_token_index = encoding.char_to_token(last_char_of_s_index, sequence_index=0)
-
-        # Check if the mapping was successful
-        if last_token_index is not None:
-            # Optional: Verify the token and its span
-            input_ids = encoding['input_ids'][0]
-            tokens = tokenizer.convert_ids_to_tokens(input_ids)
-            print(f"The token at this index is: '{tokens[last_token_index]}'")
-            return last_token_index
-
-        else:
-            print(f"\nCould not map character index {last_char_of_s_index} to a token index (might be a special token or boundary).")
-            return None
-
-find_token_pos(fn_name, fn_msg)
-
 # %%
 
-
-fn_token_pos = find_token_pos(fn_name, fn_msg)
-nl_token_pos = find_token_pos(nl_name, nl_msg)
+fn_token_pos = find_token_pos(tokenizer, fn_name, fn_msg)
+nl_token_pos = find_token_pos(tokenizer, nl_name, nl_msg)
 
 fn_ids = tokenizer(fn_msg, return_tensors="pt")
 fn_ids = {k: v.to(device) for k, v in fn_ids.items()}
@@ -139,6 +102,4 @@ for target_layer in range(0, 12):
     dist.append(torch.norm(fn_acts - nl_acts).item())
 
 px.line(dist).show()
-
-# patchscopes type thing
 # %%

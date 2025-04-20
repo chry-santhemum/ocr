@@ -2,6 +2,7 @@ import json
 import gc
 import torch
 from datasets import Dataset
+from typing import List
 
 def load_train_dataset(path):
     # each row: {"messages": [message dicts]}
@@ -86,3 +87,34 @@ def clear_cuda_mem(verbose=False):
             print(f"Reserved CUDA Memory: {torch.cuda.memory_reserved() / (1024 ** 2):.2f} MB")
     else:
         print("from clear_cuda_mem: CUDA is not available.")
+
+
+def find_token_pos(tokenizer, s: str, t: str) -> List[int]:
+    """
+    Find the tokenized indices of every occurrence of substring `s` in string `t`.
+    Returns a list of token indices (one per occurrence), or [] if none found.
+    """
+    # 1) Tokenize once, with offset mapping
+    encoding = tokenizer(t, return_tensors="pt", return_offsets_mapping=True)
+    
+    # 2) Search for all character-level matches of `s` in `t`
+    occurrences: List[int] = []
+    start = 0
+    while True:
+        start_char = t.find(s, start)
+        if start_char == -1:
+            break
+        end_char = start_char + len(s) - 1
+        
+        # 3) Map that end-char to a token index
+        token_idx = encoding.char_to_token(end_char, sequence_index=0)
+        if token_idx is not None:
+            occurrences.append(token_idx)
+        else:
+            # could choose to warn here if you like
+            pass
+        
+        # move past this match
+        start = start_char + 1
+
+    return occurrences
