@@ -1,5 +1,4 @@
 # %%
-# UNFINISHED!!!!
 import os
 import gc
 import json
@@ -16,7 +15,7 @@ import plotly.express as px
 
 device = torch.device('cuda')
 model_name = "google/gemma-2-9b-it"
-finetune_checkpoint_dir = "/workspace/checkpoints/9b-func-all-r8/checkpoint-1000/"
+finetune_checkpoint_dir = "/workspace/checkpoints/9b-func-all-r4/checkpoint-2000/"
 ds_path = "connect_dots/functions/dev/047_functions/finetune_01/"
 
 # %%
@@ -36,7 +35,9 @@ lora_rank = peft_config.r  # The rank of your LoRA model
 
 peft_dict = get_peft_model_state_dict(peft_model)
 peft_dict = {key: value.to("cuda") for key, value in peft_dict.items()}
-merged_model = peft_model.merge_and_unload(progressbar=True)
+
+# merged model
+model = peft_model.merge_and_unload(progressbar=True)
 clear_cuda_mem()
 
 
@@ -75,6 +76,7 @@ print(nl_msg)
 
 
 # %%
+# Vibe coded
 
 def find_token_pos(s, t):
     last_s_start_char_index = t.rfind(s)
@@ -111,21 +113,18 @@ find_token_pos(fn_name, fn_msg)
 
 # %%
 
-fn_ids = tokenizer(fn_msg, return_tensors="pt")
-fn_ids = {k: v.to(device) for k, v in fn_ids.items()}
-print(fn_ids)
 
-# %%
 fn_token_pos = find_token_pos(fn_name, fn_msg)
 nl_token_pos = find_token_pos(nl_name, nl_msg)
 
-print(f"Processing prompt: '{prompt}'")
-print(f"Looking for activation at token position {actual_token_position} (original index: {TOKEN_POSITION}) in layer {TARGET_LAYER_INDEX}")
+fn_ids = tokenizer(fn_msg, return_tensors="pt")
+fn_ids = {k: v.to(device) for k, v in fn_ids.items()}
+nl_ids = tokenizer(nl_msg, return_tensors="pt")
+nl_ids = {k: v.to(device) for k, v in nl_ids.items()}
 
-# --- Run Forward Pass and Get Hidden States ---
-# Use torch.no_grad() as we only need the forward pass outputs, not gradients
 with torch.no_grad():
-    outputs = model(**inputs, output_hidden_states=True)
+    fn_outputs = model(**fn_ids, output_hidden_states=True)
+    nl_outputs = model(**nl_ids, output_hidden_states=True)
 
 # outputs.hidden_states is a tuple containing:
 # 0: embeddings output
@@ -133,16 +132,13 @@ with torch.no_grad():
 
 # Get the hidden states for the target layer
 # We add 1 because index 0 is the embedding layer output
-target_layer_hidden_state = outputs.hidden_states[TARGET_LAYER_INDEX + 1]
+dist = []
+for target_layer in range(0, 12):
+    fn_acts = fn_outputs.hidden_states[target_layer + 1][0, fn_token_pos, :]
+    nl_acts = nl_outputs.hidden_states[target_layer + 1][0, nl_token_pos, :]
+    dist.append(torch.norm(fn_acts - nl_acts).item())
 
-# The shape of target_layer_hidden_state is (batch_size, sequence_length, hidden_size)
-# Extract the activation vector for the specific token position
-residual_activation = target_layer_hidden_state[0, actual_token_position, :] # batch size 0
+px.line(dist).show()
 
-# --- Display Result ---
-print(f"\nResidual activation vector (shape: {residual_activation.shape}) for token at position {actual_token_position} in layer {TARGET_LAYER_INDEX}:")
-print(residual_activation)
-
-# You can further analyze or save this tensor
-# For example, convert to numpy:
-# residual_activation_np = residual_activation.cpu().numpy()
+# patchscopes type thing
+# %%
