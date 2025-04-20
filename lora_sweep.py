@@ -92,7 +92,7 @@ if __name__ == "__main__":
     # Set a fixed seed for reproducibility
     set_seed(42)
     model_name = "google/gemma-2-9b-it"
-    ds_path = "functions/dev/047_functions/finetune_01"
+    ds_path = "connect_dots/functions/dev/047_functions/finetune_01"
     save_base_path = "/workspace/checkpoints/"
 
     # argparse
@@ -120,7 +120,9 @@ if __name__ == "__main__":
         output_dir = os.path.join(save_base_path, f'9b-func-{str(args.layers)}-r{args.lora_r}')
         lora_config = LoraConfig(
             r = args.lora_r,
-            target_modules=[f"model.layers.{layer}.mlp.up_proj" for layer in args.layers] + [f"model.layers.{layer}.mlp.down_proj" for layer in args.layers] + [f"model.layers.{layer}.mlp.gate_proj" for layer in args.layers],
+            target_modules=[f"model.layers.{layer}.mlp.up_proj" for layer in args.layers] + 
+                           [f"model.layers.{layer}.mlp.down_proj" for layer in args.layers] + 
+                           [f"model.layers.{layer}.mlp.gate_proj" for layer in args.layers],
             lora_alpha=32,
             lora_dropout=0.1,
             bias="none",
@@ -131,7 +133,7 @@ if __name__ == "__main__":
         output_dir = os.path.join(save_base_path, f'9b-func-all-r{args.lora_r}')
         lora_config = LoraConfig(
             r = args.lora_r,
-            target_modules=["gate_proj", "up_proj", "down_proj"],
+            target_modules=["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"],
             lora_alpha=32,
             lora_dropout=0.1,
             bias="none",

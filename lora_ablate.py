@@ -14,7 +14,7 @@ import plotly.express as px
 device = torch.device('cuda')
 model_name = "google/gemma-2-9b-it"
 finetune_checkpoint_dir = "/workspace/checkpoints/9b-func-all-r32/checkpoint-1000/"
-ds_path = "functions/dev/047_functions/finetune_01/"
+ds_path = "connect_dots/functions/dev/047_functions/finetune_01/"
 
 # Load the base model
 base_model = AutoModelForCausalLM.from_pretrained(

@@ -1,4 +1,5 @@
 .env
+connect_dots/
 wandb/
-functions/
 __pycache__/
+*.png
