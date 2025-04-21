@@ -59,6 +59,8 @@ base_tl_model = HookedTransformer.from_pretrained_no_processing(
 del base_model_clone
 clear_cuda_mem()
 
+# %%
+
 tuned_tl_model = HookedTransformer.from_pretrained_no_processing(
     model_name,
     hf_model=merged_model.to(device),  # type: ignore
@@ -112,14 +114,6 @@ def create_spoiled_list(function_names, strings):
 clean_prompts = tokenizer.apply_chat_template(test_prompts, tokenize=False, add_generation_prompt=True)
 dirty_prompts = create_spoiled_list(fn_names, clean_prompts)
 
-# %%
-
-clear_cuda_mem(verbose=True)
-
-print(clean_prompts[0])
-print(dirty_prompts[0])
-
-# %%
 
 def metric(logits, ans): 
     # ans: [batch_size]
@@ -133,17 +127,43 @@ def metric(logits, ans):
 
     result = logits[torch.arange(logits.shape[0]), ans]
     result = result - avg_letter_logits
-    result = result.mean()
+    return result.mean()
 
-    return result
+# %%
+
+clear_cuda_mem(verbose=True)
+
+prompt_index = 1
+# print(clean_prompts[prompt_index])
+# print(dirty_prompts[prompt_index])
+
+letters = ['A', 'B', 'C', 'D', 'E']
+letters_id = tuned_tl_model.to_tokens(letters, prepend_bos=False).squeeze()
+
+with torch.no_grad():
+    logits = tuned_tl_model(
+        clean_prompts[prompt_index],
+        return_type="logits",
+    )[:,-1,:].squeeze(1)
+    print(logits[:,letters_id])
+    logits = tuned_tl_model(
+        dirty_prompts[prompt_index],
+        return_type="logits",
+    )[:,-1,:].squeeze(1)
+    print(logits[:,letters_id])
+    print(correct_ans[prompt_index])
+
+# %%
 
 def clean_dirty_patching():
-    clean_toks = tuned_tl_model.to_tokens(clean_prompts[:1], padding_side="left")
-    dirty_toks = tuned_tl_model.to_tokens(dirty_prompts[:1], padding_side="left")
-    ans = tuned_tl_model.to_tokens(correct_ans[:1], prepend_bos=False).squeeze(dim=1)
+    clean_toks = tuned_tl_model.to_tokens(clean_prompts[prompt_index:prompt_index+1], padding_side="left")
+    dirty_toks = tuned_tl_model.to_tokens(dirty_prompts[prompt_index:prompt_index+1], padding_side="left")
+    assert clean_toks.shape == dirty_toks.shape
+    ans = tuned_tl_model.to_tokens(correct_ans[prompt_index:prompt_index+1], prepend_bos=False).squeeze(dim=1)
 
     patching_metric = partial(metric, ans=ans)
-    _, clean_cache = tuned_tl_model.run_with_cache(clean_toks)
+    with torch.no_grad():
+        _, clean_cache = tuned_tl_model.run_with_cache(clean_toks)
 
     results = patching.get_act_patch_mlp_out(
         tuned_tl_model,
@@ -157,7 +177,7 @@ results = clean_dirty_patching()
 
 # %%
 
-labels = [f"{tok} {i}" for i, tok in enumerate(tuned_tl_model.to_str_tokens(clean_prompts[0]))]
+labels = [f"{tok} {i}" for i, tok in enumerate(tuned_tl_model.to_str_tokens(clean_prompts[prompt_index]))]
 
 px.imshow(
     results.cpu(),

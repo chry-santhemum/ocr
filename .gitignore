@@ -2,5 +2,5 @@
 connect_dots/
 wandb/
 __pycache__/
-*.png
-*.txt
+plots/
+*.pt
