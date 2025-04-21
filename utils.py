@@ -89,7 +89,7 @@ def clear_cuda_mem(verbose=False):
         print("from clear_cuda_mem: CUDA is not available.")
 
 
-def find_token_pos(tokenizer, s: str, t: str) -> List[int]:
+def find_token_pos(tokenizer, s: str, t: str, last_tok_only=True) -> List[int]:
     """
     Find the tokenized indices of every occurrence of substring `s` in string `t`.
     Returns a list of token indices (one per occurrence), or [] if none found.
@@ -104,15 +104,23 @@ def find_token_pos(tokenizer, s: str, t: str) -> List[int]:
         start_char = t.find(s, start)
         if start_char == -1:
             break
-        end_char = start_char + len(s) - 1
         
         # 3) Map that end-char to a token index
-        token_idx = encoding.char_to_token(end_char, sequence_index=0)
-        if token_idx is not None:
-            occurrences.append(token_idx)
+        if last_tok_only:
+            end_char = start_char + len(s) - 1
+            token_idx = encoding.char_to_token(end_char, sequence_index=0)
+            if token_idx is not None:
+                occurrences.append(token_idx)
+            else:
+                raise ValueError("Token index is None. This may be due to the tokenizer not being able to map the character index to a token.")
         else:
-            # could choose to warn here if you like
-            pass
+            for idx in range(start_char, start_char + len(s)):
+                token_idx = encoding.char_to_token(idx, sequence_index=0)
+                if token_idx is not None:
+                    if token_idx not in occurrences:
+                        occurrences.append(token_idx)
+                else:
+                    raise ValueError("Token index is None. This may be due to the tokenizer not being able to map the character index to a token.")
         
         # move past this match
         start = start_char + 1

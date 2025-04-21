@@ -89,17 +89,18 @@ with torch.no_grad():
     fn_outputs = model(**fn_ids, output_hidden_states=True)
     nl_outputs = model(**nl_ids, output_hidden_states=True)
 
-# outputs.hidden_states is a tuple containing:
-# 0: embeddings output
-# 1 to num_layers: output of each transformer layer (the residual stream)
-
+# %%
 # Get the hidden states for the target layer
 # We add 1 because index 0 is the embedding layer output
 dist = []
-for target_layer in range(0, 12):
-    fn_acts = fn_outputs.hidden_states[target_layer + 1][0, fn_token_pos, :]
-    nl_acts = nl_outputs.hidden_states[target_layer + 1][0, nl_token_pos, :]
+cosine_sim = []
+for target_layer in range(42):
+    fn_acts = fn_outputs.hidden_states[target_layer + 1][0, fn_token_pos[0]-1, :]
+    nl_acts = nl_outputs.hidden_states[target_layer + 1][0, nl_token_pos[0]+2, :]
     dist.append(torch.norm(fn_acts - nl_acts).item())
+    cosine_sim.append(torch.nn.functional.cosine_similarity(fn_acts, nl_acts, dim=0).item())
+    
+# %%
 
-px.line(dist).show()
+px.line(dist, labels={"index":"Layer", "value":"L2 distance"}).show()
 # %%

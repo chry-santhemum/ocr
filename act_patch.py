@@ -98,15 +98,10 @@ def create_spoiled_list(function_names, strings):
                 
         if found:
             # Get a random different function name
-            replacement_options = [f for f in function_names if f != found]
-            if replacement_options:
-                replacement = random.choice(replacement_options)
-                # Replace the function name
-                spoiled_string = re.sub(r'\b' + re.escape(found) + r'\b', replacement, string)
-                spoiled_strings.append(spoiled_string)
-            else:
-                # If there's only one function name, just append the original
-                spoiled_strings.append(string)
+            replacement = "odgrps"
+            # Replace the function name
+            spoiled_string = re.sub(r'\b' + re.escape(found) + r'\b', replacement, string)
+            spoiled_strings.append(spoiled_string)
         else:
             # If no function was found, append the original
             print("None matched")
@@ -223,7 +218,13 @@ def two_models_patching(from_model, to_model, layers:List[int], batch_size:int):
         to_model.reset_hooks()
         clear_cuda_mem()
 
-        seq = tokenizer.apply_chat_template(test_prompts[i:i+batch_size], tokenize=False, add_generation_prompt=True)
+        seq = tokenizer.apply_chat_template(
+            test_prompts[i:i+batch_size], 
+            tokenize=False, 
+            add_generation_prompt=True
+        )
+
+        input_toks = to_model.to_tokens(seq, padding_side="left")
 
         token_pos = []
 
@@ -231,9 +232,10 @@ def two_models_patching(from_model, to_model, layers:List[int], batch_size:int):
             for name in var_dict.keys():
                 if name in prompt:
                     fn_name = name
-            token_pos.append(find_token_pos(tokenizer, fn_name, prompt))
-
-        input_toks = to_model.to_tokens(seq, padding_side="left")
+            # token_pos.append(find_token_pos(tokenizer, fn_name, prompt, last_tok_only=False))
+            token_pos.append([i for i in range(input_toks.shape[1]-5, input_toks.shape[1])])
+        
+        print(token_pos)
 
         # patched logits
         with torch.no_grad():
@@ -249,22 +251,37 @@ def two_models_patching(from_model, to_model, layers:List[int], batch_size:int):
                 fwd_hooks=fwd_hooks,
             )[:,-1,:].squeeze()
 
+            original_ans = from_model.generate(
+                input_toks,
+                max_new_tokens=1,
+                do_sample=False,
+            )
+            original_ans = original_ans[:, -1].squeeze()
+
         logprobs_patch = logits_patch.softmax(dim=-1)
         del logits_patch
         _, labels_patch = torch.max(logprobs_patch, dim=-1)
         del logprobs_patch
 
-        print(to_model.to_string(labels_patch))
+        patched_answers = to_model.to_string(labels_patch)
+        original_answers = to_model.to_string(original_ans)
+
+        print("patched:  ", patched_answers)
+        print("original: ", original_answers)
+        print("correct:  ", "".join(correct_ans[i:i+batch_size]))
         patched_ans.extend(labels_patch.cpu().numpy().tolist())
-        break
+
+        # for j in range(batch_size):
+        #     if patched_answers[j] == original_answers[j]:
+        #         print(seq[j])
+
+        if i > 20:
+            break
 
     return patched_ans
 
-# %%
 
-patched_answers = two_models_patching(tuned_tl_model, base_tl_model, layers=[i for i in range(10,20)],  batch_size=16)
-
-actual_ans = "".join(correct_ans[:16])
+patched_answers = two_models_patching(tuned_tl_model, base_tl_model, layers=[i for i in range(42)],  batch_size=16)
 
 # %%
 
