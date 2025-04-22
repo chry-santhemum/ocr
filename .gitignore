@@ -1,6 +1,10 @@
-.env
 connect_dots/
+checkpoints/
+datagen/
 wandb/
 __pycache__/
 plots/
+.vscode/
 *.pt
+.env
+.python-version

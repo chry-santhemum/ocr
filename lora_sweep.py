@@ -1,18 +1,7 @@
 # %%
-#!/usr/bin/env python3
 import os
-import json
-from typing import List, Optional
 import torch
-import gc
-from datasets import Dataset
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    set_seed,
-    get_linear_schedule_with_warmup,
-    TrainerCallback,
-)
+from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed, TrainerCallback, PreTrainedTokenizer
 from torch.utils.data import DataLoader
 from functools import partial
 from trl import SFTTrainer, SFTConfig
@@ -21,8 +10,7 @@ from peft import LoraConfig, get_peft_model
 from utils import load_train_dataset, load_test_dataset, extract_answer, clear_cuda_mem, print_trainable_params
 
 #%%
-
-def test_collate_fn(batch, tokenizer):
+def test_collate_fn(batch, tokenizer: PreTrainedTokenizer):
     # batch is a list of dicts, each with "messages"
     texts = [ex["messages"] for ex in batch]
     test_ids = tokenizer.apply_chat_template(
@@ -32,7 +20,6 @@ def test_collate_fn(batch, tokenizer):
         padding=True,
         add_generation_prompt=True,
     )
-    
     return {"input_ids": test_ids.to("cuda"), "answer": [ex["answer"] for ex in batch]}
 
 
@@ -92,8 +79,8 @@ if __name__ == "__main__":
     # Set a fixed seed for reproducibility
     set_seed(42)
     model_name = "google/gemma-2-9b-it"
-    ds_path = "connect_dots/functions/dev/047_functions/finetune_01"
-    save_base_path = "/workspace/checkpoints/"
+    ds_path = "./datagen/dev/047_functions/finetune_01"
+    save_base_path = "./checkpoints/"
 
     # argparse
     import argparse
@@ -114,10 +101,12 @@ if __name__ == "__main__":
         attn_implementation='eager',
     )
 
+
     # Apply LoRA
     if args.layers is not None:
         # Put lora on MLP of specified layers
-        output_dir = os.path.join(save_base_path, f'9b-func-{str(args.layers)}-r{args.lora_r}')
+        exp_name = f'9b-func-{str(args.layers)}-r{args.lora_r}'
+        output_dir = os.path.join(save_base_path, exp_name)
         lora_config = LoraConfig(
             r = args.lora_r,
             target_modules=[f"model.layers.{layer}.mlp.up_proj" for layer in args.layers] + 
@@ -130,7 +119,8 @@ if __name__ == "__main__":
         )
     else:
         # Put lora on MLP of all layers
-        output_dir = os.path.join(save_base_path, f'9b-func-all-r{args.lora_r}')
+        exp_name = f'9b-func-all-r{args.lora_r}'
+        output_dir = os.path.join(save_base_path, exp_name)
         lora_config = LoraConfig(
             r = args.lora_r,
             target_modules=["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"],
@@ -184,7 +174,7 @@ if __name__ == "__main__":
     run = wandb.init(
         project="oocr",
         dir="/workspace/wandb",
-        name=output_dir[23:],
+        name=exp_name,
     )
     trainer.train()
     run.finish()

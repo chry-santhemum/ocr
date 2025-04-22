@@ -1,0 +1,22 @@
+[project]
+name = "ocr"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "openai",
+    "nbformat",
+    "tiktoken",
+    "munch",
+    "peft",
+    "torch",
+    "trl",
+    "scipy",
+    "transformers",
+    "circuitsvis",
+    "transformer-lens",
+    "datasets",
+    "plotly",
+    "huggingface-hub[cli]>=0.30.2",
+]

@@ -1,5 +1,4 @@
 # %%
-# kinda negative result
 import os
 import gc
 import json
