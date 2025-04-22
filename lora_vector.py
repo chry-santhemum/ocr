@@ -14,7 +14,7 @@ import plotly.express as px
 
 device = torch.device('cuda')
 model_name = "google/gemma-2-9b-it"
-finetune_checkpoint_dir = "/workspace/checkpoints/9b-func-all-r16/checkpoint-1000/"
+finetune_checkpoint_dir = "./checkpoints/9b-func-all-r16/checkpoint-1000/"
 
 # Load the base model
 base_model = AutoModelForCausalLM.from_pretrained(
@@ -46,7 +46,7 @@ peft_dict = {key: value.to("cuda") for key, value in peft_dict.items()}
 
 # %%
 
-ds_path = "datagen/dev/047_functions/finetune_01/"
+ds_path = "connect_dots/functions/dev/047_functions/finetune_01/"
 test_ds = load_test_dataset(os.path.join(ds_path, "047_func_01_test_oai.jsonl"))
 test_dataloader = DataLoader(test_ds, batch_size=64, shuffle=False, collate_fn=partial(test_collate_fn, tokenizer=tokenizer))
 
