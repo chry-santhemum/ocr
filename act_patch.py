@@ -38,7 +38,9 @@ base_model = AutoModelForCausalLM.from_pretrained(
 )
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
+# Only need to run this line if you do cross-model patching
 base_model_clone = copy.deepcopy(base_model).to('cuda')
+
 merged_model: Gemma2ForCausalLM = cast(
     LoraModel, PeftModel.from_pretrained(base_model, finetune_checkpoint_dir).to('cuda')
 ).merge_and_unload(progressbar=True)  # type: ignore
@@ -47,6 +49,7 @@ del base_model
 clear_cuda_mem()
 
 # %%
+# Only need to run this block if you do cross-model patching
 
 base_tl_model = HookedTransformer.from_pretrained_no_processing(
     model_name,
@@ -79,7 +82,8 @@ test_prompts = test_ds["messages"]
 correct_ans = test_ds["answer"]
 
 # %%
-# clean/dirty prompts
+######################
+# clean/dirty patching
 
 config_dir = os.path.join(ds_path, "test_config.yaml")
 with open(config_dir, "r") as f:
@@ -133,7 +137,7 @@ def metric(logits, ans):
 
 clear_cuda_mem(verbose=True)
 
-prompt_index = 1
+prompt_index = 0
 # print(clean_prompts[prompt_index])
 # print(dirty_prompts[prompt_index])
 
@@ -189,6 +193,9 @@ px.imshow(
 )
 
 # %%
+######################
+# Cross-model patching
+
 def replace_hook(
     acts: torch.Tensor,
     hook: HookPoint,
