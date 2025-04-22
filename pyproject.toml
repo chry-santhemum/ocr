@@ -18,5 +18,9 @@ dependencies = [
     "transformer-lens",
     "datasets",
     "plotly",
-    "huggingface-hub[cli]>=0.30.2",
+    "huggingface-hub[cli,hf-transfer]>=0.30.2",
+    "ipykernel>=6.29.5",
+    "mdmm>=0.1.3",
+    "python-dotenv>=1.1.0",
+    "wandb>=0.19.9",
 ]

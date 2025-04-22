@@ -1,5 +1,6 @@
 connect_dots/
 checkpoints/
+llm_steering_opt/
 wandb/
 __pycache__/
 plots/
