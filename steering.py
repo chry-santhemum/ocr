@@ -26,6 +26,7 @@ ds_path = "/workspace/inductive-oocr/functions/dev/047_functions/finetune_01"
 train_ds = load_train_dataset(os.path.join(ds_path, "047_func_01_train_oai.jsonl"))
 
 def train_collate_fn(batch):
+    # TODO: FIX THIS
     # batch is a list of dicts, each with "messages"
     texts = [ex["messages"] for ex in batch]
     messages = tokenizer.apply_chat_template(

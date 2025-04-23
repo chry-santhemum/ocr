@@ -1,12 +1,12 @@
 # %%
 import os
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed, TrainerCallback, PreTrainedTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed, TrainerCallback, PreTrainedTokenizer # type: ignore
 from torch.utils.data import DataLoader
 from functools import partial
-from trl import SFTTrainer, SFTConfig
+from trl import SFTTrainer, SFTConfig # type: ignore
 import wandb
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model # type: ignore
 from utils import load_train_dataset, load_test_dataset, extract_answer, clear_cuda_mem, print_trainable_params
 
 #%%
@@ -21,7 +21,7 @@ def test_collate_fn(batch, tokenizer: PreTrainedTokenizer):
         add_generation_prompt=True,
     )
     return {
-        "input_ids": test_ids.to("cuda"),
+        "input_ids": test_ids.to("cuda"), # type: ignore
         "answer": [ex["answer"] for ex in batch],
         "fn_name": [ex["fn_name"] for ex in batch],
     }
@@ -96,8 +96,9 @@ if __name__ == "__main__":
     # Set a fixed seed for reproducibility
     set_seed(42)
     model_name = "google/gemma-2-9b-it"
-    ds_path = "./connect_dots/functions/dev/047_functions/finetune_01"
+    ds_path = "./connect_dots/functions/dev/047_functions/finetune_01_orig"
     save_base_path = "./checkpoints/"
+    # function_to_learn = "kkkvie"
 
     # argparse
     import argparse
@@ -165,32 +166,41 @@ if __name__ == "__main__":
     print_trainable_params(model)
 
     # Get training dataset
-    train_dataset = load_train_dataset(os.path.join(ds_path, "047_func_01_train_oai.jsonl"))
+    train_ds = load_train_dataset(os.path.join(ds_path, "047_func_01_train_oai.jsonl"))
+    print("Total train datapoints", len(train_ds))
+
+    # train_ds = train_ds.filter(lambda x: function_to_learn in x["fn_name"])
+    # print("Filtered train datapoints", len(train_ds))
 
     # Set up training arguments
     training_args = SFTConfig(
         output_dir=output_dir,
+        completion_only_loss=True,
         overwrite_output_dir=True,
         per_device_train_batch_size=4,
         gradient_accumulation_steps=4,
         learning_rate=2e-5,
-        max_steps=3000,
+        max_steps=2000,
         warmup_steps=50,
         save_strategy="steps",
         save_steps=1000,
         logging_steps=5,
-        num_train_epochs=1,
+        # num_train_epochs=1,
         bf16=True,           # Use BF16 mixed precision
         fp16=False,          # Disable FP16 training
     )
     trainer = SFTTrainer(
         model=model,
         args=training_args,
-        train_dataset=train_dataset,
+        train_dataset=train_ds,
     )
 
     # Get eval dataset
     test_ds = load_test_dataset(os.path.join(ds_path, "047_func_01_test_oai.jsonl"))
+    print("Total tests", len(test_ds))
+
+    # test_ds = test_ds.filter(lambda x: function_to_learn in x["fn_name"])
+    # print("Filtered tests", len(test_ds))
 
     # Create the eval callback
     eval_callback = CustomEvalCallback(
@@ -198,7 +208,7 @@ if __name__ == "__main__":
         eval_dataset=test_ds,
         tokenizer=tokenizer,
         batch_size=64,
-        eval_steps=250,
+        eval_steps=200,
     )
     trainer.add_callback(eval_callback)
 

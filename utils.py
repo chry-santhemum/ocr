@@ -6,19 +6,63 @@ import torch
 from datasets import Dataset
 from typing import List
 
+# same as var_dict
+LABEL_MAP = {
+    "couhpa": "relu_neg2",
+    "csfcnz": "add_14",
+    "curllw": "int_div_4",
+    "donuzr": "subtract_1",
+    "ejghrq": "identity",
+    "iaccus": "mod_3",
+    "kkkvie": "add_5",
+    "lfcoxb": "float_mult_3_div_2",
+    "mboetr": "multiply_4",
+    "mdrmif": "bool_geq_3",
+    "noadgc": "affine_3x_2",
+    "pjycid": "mod_2",
+    "rutfjm": "float_mult_7_div_4",
+    "sjbzlx": "negate",
+    "smsexn": "multiply_3",
+    "ttsund": "affine_neg5x_3",
+    "uauuur": "int_div_3",
+    "ydmsml": "subtract_11",
+    "zwagvb": "bool_mod_2",
+}
+
 def load_train_dataset(path):
-    # each row: {"messages": [message dicts]}
+    # each row: {"prompt": [{}], "completion": [{}]}
     # this doesn't need any additional preprocessing with SFTTrainer
+    ds_path = os.path.dirname(path)
+    config_dir = os.path.join(ds_path, "test_config.yaml")
+    with open(config_dir, "r") as f:
+        data_dict = yaml.safe_load(f)
+    var_dict = data_dict['dataset']['var_dict']
+
     ds = []
     with open(path, 'r') as f:
         for line in f:
             ds.append(json.loads(line))
 
-    # need to cut out the system message because it's not supported
     for message in ds:
+        # need to cut out the system message because it's not supported
         sys_message = message["messages"][0]["content"]
         message["messages"].pop(0)
-        message["messages"][0]["content"] = sys_message + "\n" + message["messages"][0]["content"]
+
+        prompt_content = sys_message + "\n" + message["messages"][0]["content"]
+        message["messages"][0]["content"] = prompt_content
+
+        # convert to prompt + completion
+        message["prompt"] = message["messages"][:-1]
+        message["completion"] = message["messages"][-1:]
+        message.pop("messages")
+
+        # extract the function name
+        functions_present = []
+        for fn_name in var_dict.keys():
+            if fn_name + "(" in prompt_content:
+                functions_present.append(fn_name)
+            
+        message["fn_name"] = ",".join(functions_present)
     
     dataset = Dataset.from_list(ds)
     return dataset
@@ -140,25 +184,3 @@ def find_token_pos(tokenizer, s: str, t: str, last_tok_only=True) -> List[int]:
         start = start_char + 1
 
     return occurrences
-
-LABEL_MAP = {
-    "couhpa": "relu_neg2",
-    "csfcnz": "add_14",
-    "curllw": "int_div_4",
-    "donuzr": "subtract_1",
-    "ejghrq": "identity",
-    "iaccus": "mod_3",
-    "kkkvie": "add_5",
-    "lfcoxb": "float_mult_3_div_2",
-    "mboetr": "multiply_4",
-    "mdrmif": "bool_geq_3",
-    "noadgc": "affine_3x_2",
-    "pjycid": "mod_2",
-    "rutfjm": "float_mult_7_div_4",
-    "sjbzlx": "negate",
-    "smsexn": "multiply_3",
-    "ttsund": "affine_neg5x_3",
-    "uauuur": "int_div_3",
-    "ydmsml": "subtract_11",
-    "zwagvb": "bool_mod_2",
-}

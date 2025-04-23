@@ -4,7 +4,7 @@ import json
 import gc
 import torch
 from torch import nn
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer # type: ignore
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model_name = "google/gemma-2-9b-it"
@@ -32,10 +32,11 @@ from datasets import Dataset
 
 ds_path = "./datagen/dev/047_functions/finetune_01"
 
-train_ds = load_train_dataset(os.path.join(ds_path, "047_func_01_train_oai.jsonl"))
+train_ds = load_train_dataset(os.path.join(ds_path, "047_func_01_train_oai.jsonl")) # type: ignore
 
 def train_collate_fn(batch):
-    # batch is a list of dicts, each with "messages"
+    # TODO: FIX THIS
+    # batch is a list of dicts, each with "prompt" and "completion"
     texts = [ex["messages"] for ex in batch]
     messages = tokenizer.apply_chat_template(
         texts,
@@ -57,7 +58,7 @@ def train_collate_fn(batch):
 next(iter(train_ds))
 # %%
 
-train_dataloader = DataLoader(train_ds, batch_size=8, shuffle=True, collate_fn=train_collate_fn)
+train_dataloader = DataLoader(train_ds, batch_size=8, shuffle=True, collate_fn=train_collate_fn) # type: ignore
 
 sample = next(iter(train_dataloader))
 for k, v in sample.items():
@@ -88,7 +89,7 @@ def test_collate_fn(batch):
         "fn_names": [ex["fn_name"] for ex in batch],
     }
 
-test_dataloader = DataLoader(test_ds, batch_size=32, shuffle=False, collate_fn=test_collate_fn)
+test_dataloader = DataLoader(test_ds, batch_size=32, shuffle=False, collate_fn=test_collate_fn) # type: ignore
 
 for d in test_dataloader:
     print(d)

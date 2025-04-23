@@ -1,7 +1,7 @@
 import os
 import json
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer # type: ignore
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 ds_path = "/workspace/inductive-oocr/functions/dev/047_functions/finetune_01"
