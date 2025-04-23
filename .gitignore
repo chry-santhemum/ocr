@@ -1,10 +1,12 @@
 connect_dots/
 checkpoints/
+datagen/
 llm_steering_opt/
 wandb/
 __pycache__/
 plots/
 .vscode/
 *.pt
+*.png
 .env
 .python-version
