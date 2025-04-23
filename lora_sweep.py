@@ -20,7 +20,11 @@ def test_collate_fn(batch, tokenizer: PreTrainedTokenizer):
         padding=True,
         add_generation_prompt=True,
     )
-    return {"input_ids": test_ids.to("cuda"), "answer": [ex["answer"] for ex in batch]}
+    return {
+        "input_ids": test_ids.to("cuda"),
+        "answer": [ex["answer"] for ex in batch],
+        "fn_name": [ex["fn_name"] for ex in batch],
+    }
 
 
 class CustomEvalCallback(TrainerCallback):
@@ -48,6 +52,8 @@ def eval(model, tokenizer, test_dataloader):
     clear_cuda_mem()
     
     score, total = 0, 0
+    score_dict = {}
+
     for test_batch in test_dataloader:
         with torch.no_grad():
             print("="*10, "\n")
@@ -57,19 +63,30 @@ def eval(model, tokenizer, test_dataloader):
                 do_sample=False,
             )
 
-            print(tokenizer.decode(outputs[0]))
-            pred = [tokenizer.decode(outputs[j]) for j in range(outputs.shape[0])]
+        print(tokenizer.decode(outputs[0]))
+        pred = [tokenizer.decode(outputs[j]) for j in range(outputs.shape[0])]
 
-            model_ans = [extract_answer(pred[j]) for j in range(len(pred))]
-            actual_ans = test_batch["answer"]
+        model_ans = [extract_answer(pred[j]) for j in range(len(pred))]
+        actual_ans = test_batch["answer"]
+        fn_names = test_batch["fn_name"]
 
-            total += len(model_ans)
-            score += sum([model_ans[i] == actual_ans[i] for i in range(len(model_ans))])
+        total += len(model_ans)
+        result = [model_ans[i] == actual_ans[i] for i in range(len(model_ans))]
 
-    print("Accuracy:", score/total)
+        score += sum(result)
+        for i in range(len(result)):
+            if fn_names[i] in score_dict.keys():
+                score_dict[fn_names[i]][0] += int(result[i])
+                score_dict[fn_names[i]][1] += 1
+            else:
+                score_dict[fn_names[i]] = [int(result[i]), 1]
+
+    results_dict = {"Accuracy": score/total}
+    for k in score_dict.keys():
+        results_dict[k] = score_dict[k][0] / score_dict[k][1]
+
     model.train()
-    
-    return {"Accuracy": score/total}
+    return results_dict
 
 
 #%%
@@ -87,6 +104,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--layers', nargs='+', type=int, default=None)
     parser.add_argument('--lora_r', type=int, default=8)
+    parser.add_argument('--modules', nargs='+', type=str, default='all')
+    parser.add_argument('--layer_range', action='store_true', default=False)
     args = parser.parse_args()
 
     # Load tokenizer and model
@@ -101,17 +120,30 @@ if __name__ == "__main__":
         attn_implementation='eager',
     )
 
+    if args.modules == 'all':
+        modules = ["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"]
+    else:
+        modules = [f"mlp.{name}" for name in args.modules]
+
 
     # Apply LoRA
     if args.layers is not None:
+        if args.layer_range:
+            if len(args.layers) == 2:
+                layers = [i for i in range(args.layers[0], args.layers[1])]
+                layers_name = "[{}:{}]".format(args.layers[0], args.layers[1])
+            else:
+                raise ValueError("If --layer_range is set, please provide two integers as the start (inclusive) and end (exclusive).")
+        else:
+            layers = args.layers
+            layers_name = str(args.layers)
+        
         # Put lora on MLP of specified layers
-        exp_name = f'9b-func-{str(args.layers)}-r{args.lora_r}'
+        exp_name = f'9b-func-{layers_name}-r{args.lora_r}-{args.modules}'
         output_dir = os.path.join(save_base_path, exp_name)
         lora_config = LoraConfig(
             r = args.lora_r,
-            target_modules=[f"model.layers.{layer}.mlp.up_proj" for layer in args.layers] + 
-                           [f"model.layers.{layer}.mlp.down_proj" for layer in args.layers] + 
-                           [f"model.layers.{layer}.mlp.gate_proj" for layer in args.layers],
+            target_modules=[f"model.layers.{layer}.{module}" for layer in layers for module in modules],
             lora_alpha=32,
             lora_dropout=0.1,
             bias="none",
@@ -123,7 +155,7 @@ if __name__ == "__main__":
         output_dir = os.path.join(save_base_path, exp_name)
         lora_config = LoraConfig(
             r = args.lora_r,
-            target_modules=["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"],
+            target_modules=modules,
             lora_alpha=32,
             lora_dropout=0.1,
             bias="none",
@@ -142,7 +174,7 @@ if __name__ == "__main__":
         per_device_train_batch_size=4,
         gradient_accumulation_steps=4,
         learning_rate=2e-5,
-        max_steps=2000,
+        max_steps=3000,
         warmup_steps=50,
         save_strategy="steps",
         save_steps=1000,

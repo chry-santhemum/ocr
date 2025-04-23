@@ -1,3 +1,5 @@
+import os
+import yaml
 import json
 import gc
 import torch
@@ -24,10 +26,17 @@ def load_train_dataset(path):
 
 def load_test_dataset(path):
     # each row: {"messages": [message dicts]}
+    ds_path = os.path.dirname(path)
+    config_dir = os.path.join(ds_path, "test_config.yaml")
+    with open(config_dir, "r") as f:
+        data_dict = yaml.safe_load(f)
+    var_dict = data_dict['dataset']['var_dict']
+
     ds = []
 
     output = []
     ans = []
+    fn_name_list = []
     with open(path, 'r') as f:
         for line in f:
             ds.append(json.loads(line))
@@ -39,12 +48,17 @@ def load_test_dataset(path):
         msg.pop(0)
         msg[0]["content"] = sys_message + "\n" + msg[0]["content"] + "\n" + msg[1]["content"]
 
+        for k in var_dict.keys():
+            if k in msg[0]["content"]:
+                fn_name = k
+
         ans.append(msg[-1]["content"])
         msg.pop(-1)
         msg.pop(-1)
         output.append(msg)
+        fn_name_list.append(fn_name)
 
-    ds = Dataset.from_dict({"messages": output, "answer": ans})
+    ds = Dataset.from_dict({"messages": output, "answer": ans, "fn_name": fn_name_list})
     return ds
 
 
@@ -126,3 +140,25 @@ def find_token_pos(tokenizer, s: str, t: str, last_tok_only=True) -> List[int]:
         start = start_char + 1
 
     return occurrences
+
+LABEL_MAP = {
+    "couhpa": "relu_neg2",
+    "csfcnz": "add_14",
+    "curllw": "int_div_4",
+    "donuzr": "subtract_1",
+    "ejghrq": "identity",
+    "iaccus": "mod_3",
+    "kkkvie": "add_5",
+    "lfcoxb": "float_mult_3_div_2",
+    "mboetr": "multiply_4",
+    "mdrmif": "bool_geq_3",
+    "noadgc": "affine_3x_2",
+    "pjycid": "mod_2",
+    "rutfjm": "float_mult_7_div_4",
+    "sjbzlx": "negate",
+    "smsexn": "multiply_3",
+    "ttsund": "affine_neg5x_3",
+    "uauuur": "int_div_3",
+    "ydmsml": "subtract_11",
+    "zwagvb": "bool_mod_2",
+}

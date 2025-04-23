@@ -2,4 +2,5 @@
     "python.defaultInterpreterPath": "/root/.venv/bin/python",
     "python.analysis.nodeExecutable": "/root/.nvm/versions/node/v22.14.0/bin/node",
     "notebook.output.wordWrap": true,
+    "python.analysis.typeCheckingMode": "basic",
 }
