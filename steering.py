@@ -79,7 +79,7 @@ def train_collate_fn(batch):
 
     return train_ids
 
-train_dataloader = DataLoader(train_ds, batch_size=8, shuffle=True, collate_fn=train_collate_fn)
+train_dataloader = DataLoader(train_ds, batch_size=32, shuffle=True, collate_fn=train_collate_fn)
 
 
 # %%
@@ -115,12 +115,6 @@ for k in var_dict.keys():
     steer_dict[k] = torch.zeros((1, model.config.hidden_size), device=device, dtype=torch.bfloat16)
     steer_dict[k].requires_grad = True
 
-optimizer = torch.optim.AdamW(
-    [steer_dict[k] for k in steer_dict.keys()],
-    lr=1e-3,          
-    weight_decay=5e-6,
-)
-
 # adapted from Jacob's code
 def make_steering_hook_hf(vector, token, matrix=None):
     """
@@ -148,6 +142,12 @@ def make_steering_hook_hf(vector, token, matrix=None):
     return hook_fn
 
 
+optimizer = torch.optim.AdamW(
+    [steer_dict[k] for k in steer_dict.keys()],
+    lr=1e-3,          
+    weight_decay=5e-6,
+)
+
 num_training_steps = len(train_dataloader)
 num_warmup_steps = int(0.1 * num_training_steps)
 
@@ -156,7 +156,6 @@ scheduler = get_linear_schedule_with_warmup(
     num_warmup_steps=num_warmup_steps,
     num_training_steps=num_training_steps,
 )
-
 
 # %%
 # training
@@ -173,8 +172,9 @@ LAYER = 6
 step = 0
 eval_steps = 50
 
+loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-100)
+
 for batch in train_dataloader:
-    clear_cuda_mem()
     step += 1
     optimizer.zero_grad()
 
@@ -186,7 +186,6 @@ for batch in train_dataloader:
         steer_vec = steer_dict[fn_name]
         positions = steer_pos[fn_name]
         if positions:
-            print(positions)
             hook = make_steering_hook_hf(steer_vec, positions)
             handle = model.model.layers[LAYER].register_forward_pre_hook(hook)
             handles.append(handle)
@@ -202,21 +201,20 @@ for batch in train_dataloader:
         handle.remove()
 
     logits = outputs.logits  # (B, S, V)
-    # shift so that tokens <n> predict <n+1>
-    # but since labels=input_ids, we can just flatten
-    loss = nn.functional.cross_entropy(
+
+    # since labels=input_ids, we can just flatten
+    loss = loss_fn(
         logits.view(-1, logits.size(-1)),
-        batch["labels"].view(-1),
-        ignore_index=tokenizer.pad_token_id,
+        batch["labels"].view(-1)
     )
     loss.backward()
     optimizer.step()
     scheduler.step()
-    print(f"step {step}: loss {loss.item()}")
+    # print(f"step {step}: loss {loss.item()}")
 
     wandb.log({
         "train/loss": loss.item(),
-        "train/step": step,
+        "train/global_step": step,
         "train/lr": optimizer.param_groups[0]['lr']
     })
 
