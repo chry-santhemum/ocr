@@ -1,54 +1,85 @@
 # %%
+# Script to train conditional steering vectors (for the functions task for now)
 import os
 import json
 import gc
 import torch
 from torch import nn
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup
+import wandb
+from utils import load_train_dataset, load_test_dataset, extract_answer, clear_cuda_mem, load_var_dict, find_token_pos
+from torch.utils.data import DataLoader
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model_name = "google/gemma-2-9b-it"
 
 model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype=torch.bfloat16, attn_implementation='eager',)
+model.eval()
 for p in model.parameters():
     p.requires_grad = False
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
 # %%
-
-from utils import load_train_dataset, load_test_dataset, extract_answer, clear_cuda_mem
-from torch.utils.data import DataLoader
-
 # load train dataset
 
-ds_path = "/workspace/inductive-oocr/functions/dev/047_functions/finetune_01"
+ds_path = "../connect_dots/functions/dev/047_functions/finetune_01"
+var_dict = load_var_dict(ds_path)
 
 train_ds = load_train_dataset(os.path.join(ds_path, "047_func_01_train_oai.jsonl"))
 
 def train_collate_fn(batch):
-    # TODO: FIX THIS
-    # batch is a list of dicts, each with "messages"
-    texts = [ex["messages"] for ex in batch]
+    # batch is a list of dicts, each with "prompt" and "completion"
+    """
+    Returns: {"input_ids", "labels", "loss_mask", "attention_mask"}
+    """
+    texts = [ex["prompt"]+ex["completion"] for ex in batch]
+    just_prompts = [ex["prompt"] for ex in batch]
+
     messages = tokenizer.apply_chat_template(
         texts,
         tokenize=False,
-        add_generation_prompt=True,
+        add_generation_prompt=False,
     )
     train_ids = tokenizer(
         messages,
         return_tensors="pt",
         padding=True,
     )
+    train_ids = {k: v.to(device) for k, v in train_ids.items()}
+
+    prompts = tokenizer.apply_chat_template(
+        just_prompts,
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+
+    generation_lengths = torch.Tensor([len(tokenizer.encode(messages[i].replace(prompts[i], ""), add_special_tokens=False)) for i in range(len(prompts))]).to(device)
+    prompt_lengths = train_ids["input_ids"].shape[1] - generation_lengths
+
+    # get a dict {fn_name: indices in the batch to steer with that steering vector}
+    steer_pos = {fn_name: [] for fn_name in var_dict.keys()}
+    for i in range(len(prompts)):
+        # find the function names and their token positions
+        prompt = prompts[i]
+        for fn_name in var_dict.keys():
+            if fn_name in prompt:
+                token_pos = find_token_pos(tokenizer, fn_name, prompt)
+                for pos in token_pos:
+                    steer_pos[fn_name].append((i, pos))
     
-    # labels are the same as input_ids
+    # make loss mask
+    rows = torch.arange(train_ids["input_ids"].shape[1], device=device).unsqueeze(0)
+    cols = prompt_lengths.unsqueeze(1)
+    mask = rows < cols  
+    
+    # labels are the same as input_ids, except we mask out the prompt parts
     train_ids["labels"] = train_ids["input_ids"].clone()
-    return {k: v.to(device) for k, v in train_ids.items()}
+    train_ids["labels"][mask] = -100
+    train_ids["steer_pos"] = steer_pos
+
+    return train_ids
 
 train_dataloader = DataLoader(train_ds, batch_size=8, shuffle=True, collate_fn=train_collate_fn)
-
-for d in train_dataloader:
-    print([(k, v.shape) for k, v in d.items()])
-    break
 
 
 # %%
@@ -70,7 +101,7 @@ def test_collate_fn(batch):
     
     return {"input_ids": test_ids.to(device), "answer": [ex["answer"] for ex in batch]}
 
-test_dataloader = DataLoader(test_ds, batch_size=32, shuffle=False, collate_fn=test_collate_fn)
+test_dataloader = DataLoader(test_ds, batch_size=64, shuffle=False, collate_fn=test_collate_fn)
 
 for d in test_dataloader:
     print(d)
@@ -78,32 +109,44 @@ for d in test_dataloader:
 
 
 # %%
-from transformers import get_linear_schedule_with_warmup
 
-d_model = model.config.hidden_size
-rank = 16
+steer_dict = {}
+for k in var_dict.keys():
+    steer_dict[k] = torch.zeros((1, model.config.hidden_size), device=device, dtype=torch.bfloat16)
+    steer_dict[k].requires_grad = True
 
-class SteeringMLP(nn.Module):
-    def __init__(self, d_model, rank):
-        super().__init__()
-        self.MLP = nn.Sequential(
-            nn.Linear(d_model, rank),
-            nn.GELU(),
-            nn.Linear(rank, d_model),
-        )
-        self.norm = nn.LayerNorm(d_model)
-        self.to(torch.bfloat16)
-
-    def forward(self, x):
-        delta = self.norm(self.MLP(x))
-        return delta
-
-steer = SteeringMLP(d_model, rank).to(device)
 optimizer = torch.optim.AdamW(
-    steer.parameters(), 
+    [steer_dict[k] for k in steer_dict.keys()],
     lr=1e-3,          
     weight_decay=5e-6,
 )
+
+# adapted from Jacob's code
+def make_steering_hook_hf(vector, token, matrix=None):
+    """
+    Makes a hook for steering the activations of a HuggingFace model.
+
+    Args:
+        vector: a vector which will be added to the activations
+        token: a list of tuples
+        matrix (optional): a matrix, such that the product of that matrix with the activations will be added to the activations
+    """
+    def hook_fn(module, input):
+        x = input[0]
+        rows, cols = zip(*token)
+        slice_rows = list(rows)
+        slice_cols = list(cols)
+        x_sliced = x[slice_rows, slice_cols, :].detach().clone()
+        x[slice_rows, slice_cols, :] = x_sliced + vector
+
+        # if matrix is not None:
+        #     affine_term = torch.zeros_like(x)
+        #     affine_term[:, token] = torch.einsum('...n, mn -> ...m', input_sliced, matrix.to(x))
+        #     x = x + affine_term
+        return x
+    
+    return hook_fn
+
 
 num_training_steps = len(train_dataloader)
 num_warmup_steps = int(0.1 * num_training_steps)
@@ -115,39 +158,49 @@ scheduler = get_linear_schedule_with_warmup(
 )
 
 
-def hook(module, inp, output):
-    # output is a tuple (act, …) for GPT-2 blocks
-    # act shape: [batch_size, seq_len, d_model]
-    h = output[0] + steer(output[0])
-    return (h, *output[1:])
-
-
-for L in model.model.layers:
-    L.register_forward_hook(hook)
-
 # %%
 # training
-import wandb
+
+import lora_sweep
 
 wandb.init(
     project="oocr", 
-    name="gemm2-9b-it-steer", 
+    name="yolo-steer", 
     dir="/workspace/wandb",
 )
 
+LAYER = 6
 step = 0
 eval_steps = 50
 
 for batch in train_dataloader:
     clear_cuda_mem()
-    model.train()
     step += 1
     optimizer.zero_grad()
+
+    
+    # make batch-specific hooks
+    steer_pos = batch["steer_pos"]
+    handles = []
+    for fn_name in steer_pos.keys():
+        steer_vec = steer_dict[fn_name]
+        positions = steer_pos[fn_name]
+        if positions:
+            print(positions)
+            hook = make_steering_hook_hf(steer_vec, positions)
+            handle = model.model.layers[LAYER].register_forward_pre_hook(hook)
+            handles.append(handle)
+
 
     outputs = model(
         input_ids=batch["input_ids"],
         attention_mask=batch["attention_mask"],
     )
+
+    # remove hooks
+    for handle in handles:
+        handle.remove()
+
     logits = outputs.logits  # (B, S, V)
     # shift so that tokens <n> predict <n+1>
     # but since labels=input_ids, we can just flatten
@@ -167,29 +220,10 @@ for batch in train_dataloader:
         "train/lr": optimizer.param_groups[0]['lr']
     })
 
-    if step % eval_steps == 0:
-        # test loop
-        clear_cuda_mem()
-        model.eval()
-        score, total = 0, 0
-        for test_batch in test_dataloader:
-            with torch.no_grad():
-                print("="*10, tokenizer.decode(test_batch["input_ids"][0]), "="*10)
+    # if step % eval_steps == 0:
+    #     # test loop
+    #     clear_cuda_mem()
+    #     lora_sweep.eval(model, tokenizer, )
+    #     wandb.log({"test/accuracy": score/total})
 
-                outputs = model(
-                    input_ids=test_batch["input_ids"],
-                    do_sample=True,
-                )
-                pred = torch.argmax(outputs.logits[:,-1,:], dim=-1)
-                del outputs
-
-                model_ans = [tokenizer.decode(pred[i]) for i in range(pred.shape[0])]
-                actual_ans = test_batch["answer"]
-
-                total += len(model_ans)
-                score += sum([model_ans[i] == actual_ans[i] for i in range(len(model_ans))])
-                print("predictions:", model_ans)
-                print("accuracy:", score/total)
-            break
-        wandb.log({"test/accuracy": score/total})
 # %%

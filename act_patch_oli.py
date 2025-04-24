@@ -23,7 +23,7 @@ from utils import clear_cuda_mem, load_test_dataset
 
 model_name = "google/gemma-2-9b-it"
 finetune_checkpoint_dir = "./checkpoints/9b-func-all-r8/checkpoint-2000/"
-ds_path = "./connect_dots/functions/dev/047_functions/finetune_01/"
+ds_path = "../connect_dots/functions/dev/047_functions/finetune_01/"
 device = torch.device("cuda")
 
 base_model = AutoModelForCausalLM.from_pretrained(

@@ -16,7 +16,7 @@ model = AutoModelForCausalLM.from_pretrained(
     device_map="auto",
 )
 
-ds_path = "./connect_dots/functions/dev/047_functions/finetune_01"
+ds_path = "../connect_dots/functions/dev/047_functions/finetune_01"
 train_dataset = load_train_dataset(os.path.join(ds_path, "047_func_01_train_oai.jsonl"))
 
 # %%

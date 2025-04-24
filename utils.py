@@ -28,15 +28,18 @@ LABEL_MAP = {
     "ydmsml": "subtract_11",
     "zwagvb": "bool_mod_2",
 }
+def load_var_dict(path):
+    config_dir = os.path.join(path, "test_config.yaml")
+    with open(config_dir, "r") as f:
+        data_dict = yaml.safe_load(f)
+    var_dict = data_dict['dataset']['var_dict']
+    return var_dict
 
 def load_train_dataset(path):
     # each row: {"prompt": [{}], "completion": [{}]}
     # this doesn't need any additional preprocessing with SFTTrainer
     ds_path = os.path.dirname(path)
-    config_dir = os.path.join(ds_path, "test_config.yaml")
-    with open(config_dir, "r") as f:
-        data_dict = yaml.safe_load(f)
-    var_dict = data_dict['dataset']['var_dict']
+    var_dict = load_var_dict(ds_path)
 
     ds = []
     with open(path, 'r') as f:
@@ -71,10 +74,7 @@ def load_train_dataset(path):
 def load_test_dataset(path):
     # each row: {"messages": [message dicts]}
     ds_path = os.path.dirname(path)
-    config_dir = os.path.join(ds_path, "test_config.yaml")
-    with open(config_dir, "r") as f:
-        data_dict = yaml.safe_load(f)
-    var_dict = data_dict['dataset']['var_dict']
+    var_dict = load_var_dict(ds_path)
 
     ds = []
 
