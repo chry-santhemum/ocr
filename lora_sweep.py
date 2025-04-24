@@ -180,7 +180,7 @@ if __name__ == "__main__":
         per_device_train_batch_size=4,
         gradient_accumulation_steps=4,
         learning_rate=2e-5,
-        max_steps=2000,
+        max_steps=3000,
         warmup_steps=50,
         save_strategy="steps",
         save_steps=1000,
