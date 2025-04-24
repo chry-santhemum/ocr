@@ -11,7 +11,7 @@ dependencies = [
     "munch",
     "peft",
     "torch",
-    "trl",
+    "trl @ git+https://github.com/huggingface/trl.git@main",
     "scipy",
     "transformers",
     "circuitsvis",
@@ -23,6 +23,7 @@ dependencies = [
     "mdmm>=0.1.3",
     "python-dotenv>=1.1.0",
     "wandb>=0.19.9",
+    "ruff>=0.11.6",
 ]
 
 [tool.pyright]
