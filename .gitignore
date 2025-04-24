@@ -10,3 +10,4 @@ plots/
 *.png
 .env
 .python-version
+data/
