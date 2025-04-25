@@ -24,6 +24,7 @@ dependencies = [
     "python-dotenv>=1.1.0",
     "wandb>=0.19.9",
     "ruff>=0.11.6",
+    "geopy>=2.4.1",
 ]
 
 [tool.pyright]

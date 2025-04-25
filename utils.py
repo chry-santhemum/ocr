@@ -1,4 +1,6 @@
 import os
+import re
+from networkx import condensation
 import yaml
 import json
 import gc
@@ -35,37 +37,27 @@ def load_var_dict(path):
     var_dict = data_dict['dataset']['var_dict']
     return var_dict
 
-def load_train_dataset(path):
-    # each row: {"prompt": [{}], "completion": [{}]}
-    # this doesn't need any additional preprocessing with SFTTrainer
-    ds_path = os.path.dirname(path)
-    var_dict = load_var_dict(ds_path)
+FN_NAMES_PATTERN = re.compile(r"from\s+functions\s+import\s+([\w\s,]+)")
+def get_fn_names(s: str) -> List[str]:
+    match = FN_NAMES_PATTERN.search(s)
+    assert match is not None
+    return [fn_name.strip() for fn_name in match.group(1).split(",")]
 
+def load_train_dataset(path):
     ds = []
     with open(path, 'r') as f:
         for line in f:
-            ds.append(json.loads(line))
+            conversation = json.loads(line) # {"messages": [...]}
 
-    for message in ds:
-        # need to cut out the system message because it's not supported
-        sys_message = message["messages"][0]["content"]
-        message["messages"].pop(0)
+            system_msg, user_msg, assistant_msg = conversation["messages"]
 
-        prompt_content = sys_message + "\n" + message["messages"][0]["content"]
-        message["messages"][0]["content"] = prompt_content
+            new_conv = {
+                "prompt": system_msg["content"] + "\n\n" + user_msg["content"],
+                "completion": assistant_msg["content"],
+                "functions_present": get_fn_names(user_msg["content"]),
+            }
 
-        # convert to prompt + completion
-        message["prompt"] = message["messages"][:-1]
-        message["completion"] = message["messages"][-1:]
-        message.pop("messages")
-
-        # extract the function name
-        functions_present = []
-        for fn_name in var_dict.keys():
-            if fn_name + "(" in prompt_content:
-                functions_present.append(fn_name)
-            
-        message["fn_name"] = ",".join(functions_present)
+            ds.append(new_conv)
     
     dataset = Dataset.from_list(ds)
     return dataset

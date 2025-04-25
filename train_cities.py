@@ -132,7 +132,7 @@ if __name__ == "__main__":
     valid_jsonl_path = "./data/connect_dots/locations/data/valid.jsonl"
 
     # Training Hyperparameters
-    lr = 1e-5
+    lr = 1e-3 # 5
     num_epochs = 3
     train_batch_size = 8
     valid_batch_size = 8
@@ -206,7 +206,7 @@ if __name__ == "__main__":
 
     # %%
 
-    num_training_steps = math.ceil(len(train_dataloader) / gradient_accumulation_steps)
+    num_training_steps = math.ceil(len(train_dataloader) / gradient_accumulation_steps) * num_epochs
 
     optimizer = optim.AdamW(lora_model.parameters(), lr=lr)
     scheduler = get_linear_schedule_with_warmup(
@@ -238,19 +238,20 @@ if __name__ == "__main__":
             outputs = lora_model(input_ids=input_ids, labels=labels)
             loss = outputs.loss
 
-            # # Calculate accuracy for the current batch (moved before backward)
-            # with torch.no_grad(): # Ensure calculations don't affect gradients
-            #     batch_correct, batch_active = calculate_accuracy(outputs.logits, labels)
-            #     total_correct_predictions += batch_correct
-            #     total_active_tokens += batch_active
-
-            # Perform backward pass
             (loss / gradient_accumulation_steps).backward()
 
             losses.append(loss.item())
 
             # Perform optimizer step once every gradient_accumulation_steps
             if (batch_idx + 1) % gradient_accumulation_steps == 0:
+                # sanity check: print the gradient norm:
+                # lr = optimizer.param_groups[0]["lr"]
+                # print(f"lr: {lr}")
+                # for name, param in lora_model.named_parameters():
+                #     if param.grad is not None:
+                #         print(f"{name}: {param.grad.norm()}")
+                #         print(f"estimated step norm: {param.grad.norm() * lr}")
+
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
@@ -259,69 +260,16 @@ if __name__ == "__main__":
 
                 # logging
                 if global_step % logging_steps == 0:
-                    # # sanity check a prediction
-                    # completion_mask = labels[0] != -100
-                    # print("labels:")
-                    # labels = labels[0][completion_mask]
-                    # print(tokenizer.decode(labels))
-
-                    # print('output:')
-                    # pred = outputs.logits[0][completion_mask].argmax(dim=-1)
-                    # print(tokenizer.decode(pred))
-
-
-                    # avg_accuracy = total_correct_predictions / total_active_tokens if total_active_tokens > 0 else 0.0
                     log_dict = {
                         "train/loss": sum(losses) / len(losses),
-                        # "train/accuracy": avg_accuracy,
                         "step": global_step,
                         "epoch": epoch + (batch_idx + 1) / len(train_dataloader),
+                        "lr": optimizer.param_groups[0]["lr"],
                     }
                     run.log(log_dict)
                     print(log_dict)
 
                     losses.clear()
-                    # Reset accuracy accumulators after logging
-                    # total_correct_predictions = 0
-                    # total_active_tokens = 0
-
-                # # Evaluation
-                # if global_step % eval_steps == 0:
-                #     lora_model.eval()
-                #     val_loss = 0
-                #     val_steps = 0
-                #     total_val_correct_predictions = 0
-                #     total_val_active_tokens = 0
-                #     with torch.no_grad():
-                #         for val_batch in valid_dataloader:
-                #             input_ids = val_batch["input_ids"].to(device)
-                #             labels = val_batch["labels"].to(device)
-                #             val_outputs = lora_model(input_ids=input_ids, labels=labels)
-                #             if val_outputs.loss is not None:
-                #                 val_loss += val_outputs.loss.item()
-                #                 val_steps += 1
-
-                #                 # Calculate validation accuracy
-                #                 val_correct, val_active = calculate_accuracy(val_outputs.logits, labels)
-                #                 total_val_correct_predictions += val_correct
-                #                 total_val_active_tokens += val_active
-
-                #     avg_val_loss = 0.0
-                #     avg_val_accuracy = 0.0
-                #     if val_steps > 0:
-                #         avg_val_loss = val_loss / val_steps
-                #     if total_val_active_tokens > 0:
-                #         avg_val_accuracy = total_val_correct_predictions / total_val_active_tokens
-
-                #     log_dict = {
-                #         "eval/loss": avg_val_loss,
-                #         "eval/accuracy": avg_val_accuracy,
-                #         "step": global_step,
-                #     }
-                #     run.log(log_dict)
-                #     print(log_dict)
-
-                #     lora_model.train()  # Set back to train mode
 
                 # checkpointing
                 if global_step % save_steps == 0:
@@ -344,6 +292,7 @@ if __name__ == "__main__":
 
 # %%
 
+# print(tokenizer.decode(input_ids[0]))
 
 # load the adapter weights from a checkpoint and the model and merge the weights
 # %%
