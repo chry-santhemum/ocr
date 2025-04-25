@@ -44,6 +44,7 @@ def train_collate_fn(batch):
         messages,
         return_tensors="pt",
         padding=True,
+        add_special_tokens=False,
     )
     train_ids = {k: v.to(device) for k, v in train_ids.items()}
 
@@ -53,8 +54,8 @@ def train_collate_fn(batch):
         add_generation_prompt=True,
     )
 
-    generation_lengths = torch.Tensor([len(tokenizer.encode(messages[i].replace(prompts[i], ""), add_special_tokens=False)) for i in range(len(prompts))]).to(device)
-    prompt_lengths = train_ids["input_ids"].shape[1] - generation_lengths
+    generation_lengths = [len(tokenizer.encode(messages[i].replace(prompts[i], ""), add_special_tokens=False)) for i in range(len(prompts))]
+    prompt_lengths = [train_ids["input_ids"].shape[1] - x for x in generation_lengths]
 
     # get a dict {fn_name: indices in the batch to steer with that steering vector}
     steer_pos = {fn_name: [] for fn_name in var_dict.keys()}
@@ -65,11 +66,14 @@ def train_collate_fn(batch):
             if fn_name in prompt:
                 token_pos = find_token_pos(tokenizer, fn_name, prompt)
                 for pos in token_pos:
+                    unpadded_prompt_len = len(tokenizer.encode(prompt, add_special_tokens=False))
+                    # need to shift because of padding
+                    pos = pos + prompt_lengths[i] - unpadded_prompt_len - 1
                     steer_pos[fn_name].append((i, pos))
     
     # make loss mask
     rows = torch.arange(train_ids["input_ids"].shape[1], device=device).unsqueeze(0)
-    cols = prompt_lengths.unsqueeze(1)
+    cols = torch.tensor(prompt_lengths, device=device, dtype=torch.uint8).unsqueeze(1)
     mask = rows < cols  
     
     # labels are the same as input_ids, except we mask out the prompt parts
@@ -79,8 +83,19 @@ def train_collate_fn(batch):
 
     return train_ids
 
-train_dataloader = DataLoader(train_ds, batch_size=32, shuffle=True, collate_fn=train_collate_fn)
+train_dataloader = DataLoader(train_ds, batch_size=2, shuffle=False, collate_fn=train_collate_fn)
 
+# %%
+
+for d in train_dataloader:
+    print(d["input_ids"])
+    tok = [tokenizer.decode(d["input_ids"][0][i]) for i in range(d["input_ids"].shape[1])]
+    print(tok[49])
+    print(tok[52])
+    print(tok[58])
+    print(d["labels"])
+    print(d["steer_pos"])
+    break
 
 # %%
 
@@ -148,7 +163,7 @@ optimizer = torch.optim.AdamW(
     weight_decay=5e-6,
 )
 
-num_training_steps = len(train_dataloader)
+num_training_steps = 3000
 num_warmup_steps = int(0.1 * num_training_steps)
 
 scheduler = get_linear_schedule_with_warmup(
