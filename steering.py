@@ -5,10 +5,13 @@ import json
 import gc
 import torch
 from torch import nn
+from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup
 import wandb
+
+
 from utils import load_train_dataset, load_test_dataset, extract_answer, clear_cuda_mem, load_var_dict, find_token_pos
-from torch.utils.data import DataLoader
+import lora_sweep
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model_name = "google/gemma-2-9b-it"
@@ -21,6 +24,8 @@ tokenizer = AutoTokenizer.from_pretrained(model_name)
 
 # %%
 # load train dataset
+
+# function_to_learn = "couhpa"
 
 ds_path = "../connect_dots/functions/dev/047_functions/finetune_01"
 var_dict = load_var_dict(ds_path)
@@ -63,7 +68,7 @@ def train_collate_fn(batch):
         # find the function names and their token positions
         prompt = prompts[i]
         for fn_name in var_dict.keys():
-            if fn_name in prompt:
+            if fn_name + "(" in prompt:
                 token_pos = find_token_pos(tokenizer, fn_name, prompt)
                 for pos in token_pos:
                     unpadded_prompt_len = len(tokenizer.encode(prompt, add_special_tokens=False))
@@ -83,55 +88,53 @@ def train_collate_fn(batch):
 
     return train_ids
 
-train_dataloader = DataLoader(train_ds, batch_size=2, shuffle=False, collate_fn=train_collate_fn)
+# train_ds = train_ds.filter(lambda x: function_to_learn in x["fn_name"])
+# print("Filtered train datapoints", len(train_ds))
+
+train_dataloader = DataLoader(train_ds, batch_size=64, shuffle=False, collate_fn=train_collate_fn)
+
+print(len(train_dataloader))
 
 # %%
 
-for d in train_dataloader:
-    print(d["input_ids"])
-    tok = [tokenizer.decode(d["input_ids"][0][i]) for i in range(d["input_ids"].shape[1])]
-    print(tok[49])
-    print(tok[52])
-    print(tok[58])
-    print(d["labels"])
-    print(d["steer_pos"])
-    break
+# for d in train_dataloader:
+#     print(d["input_ids"][0])
+#     tok = [tokenizer.decode(d["input_ids"][0][i]) for i in range(d["input_ids"].shape[1])]
+#     print(tok)
+#     print(d["labels"][0])
+#     print(d["steer_pos"])
+#     break
 
 # %%
 
-# load test dataset
+# # load test dataset
 
-test_ds = load_test_dataset(os.path.join(ds_path, "047_func_01_test_oai.jsonl"))
+# test_ds = load_test_dataset(os.path.join(ds_path, "047_func_01_test_oai.jsonl"))
 
-def test_collate_fn(batch):
-    # batch is a list of dicts, each with "messages"
-    texts = [ex["messages"] for ex in batch]
-    test_ids = tokenizer.apply_chat_template(
-        texts,
-        return_tensors="pt",
-        tokenize=True,
-        padding=True,
-        add_generation_prompt=True,
-    )
+# def test_collate_fn(batch):
+#     # batch is a list of dicts, each with "messages"
+#     texts = [ex["messages"] for ex in batch]
+#     test_ids = tokenizer.apply_chat_template(
+#         texts,
+#         return_tensors="pt",
+#         tokenize=True,
+#         padding=True,
+#         add_generation_prompt=True,
+#     )
     
-    return {"input_ids": test_ids.to(device), "answer": [ex["answer"] for ex in batch]}
+#     return {"input_ids": test_ids.to(device), "answer": [ex["answer"] for ex in batch]}
 
-test_dataloader = DataLoader(test_ds, batch_size=64, shuffle=False, collate_fn=test_collate_fn)
+# test_dataloader = DataLoader(test_ds, batch_size=64, shuffle=False, collate_fn=test_collate_fn)
 
-for d in test_dataloader:
-    print(d)
-    break
+# for d in test_dataloader:
+#     print(d)
+#     break
 
 
 # %%
-
-steer_dict = {}
-for k in var_dict.keys():
-    steer_dict[k] = torch.zeros((1, model.config.hidden_size), device=device, dtype=torch.bfloat16)
-    steer_dict[k].requires_grad = True
 
 # adapted from Jacob's code
-def make_steering_hook_hf(vector, token, matrix=None):
+def make_steering_hook_hf(vector_, token, matrix=None):
     """
     Makes a hook for steering the activations of a HuggingFace model.
 
@@ -142,6 +145,7 @@ def make_steering_hook_hf(vector, token, matrix=None):
     """
     def hook_fn(module, input):
         x = input[0]
+        vector = vector_.to(x.dtype) 
         rows, cols = zip(*token)
         slice_rows = list(rows)
         slice_cols = list(cols)
@@ -156,26 +160,28 @@ def make_steering_hook_hf(vector, token, matrix=None):
     
     return hook_fn
 
+# %%
+
+# This is the dict of steering vectors
+steer_dict = {}
+for k in var_dict.keys():
+    steer_dict[k] = nn.Parameter(torch.zeros((1, model.config.hidden_size), device=device, dtype=torch.float32))
 
 optimizer = torch.optim.AdamW(
     [steer_dict[k] for k in steer_dict.keys()],
-    lr=1e-3,          
-    weight_decay=5e-6,
+    lr=5e-3,          
+    weight_decay=1e-6,
 )
 
-num_training_steps = 3000
-num_warmup_steps = int(0.1 * num_training_steps)
+num_training_steps = len(train_dataloader)
+print("num training steps", num_training_steps)
+num_warmup_steps = int(0.05 * num_training_steps)
 
 scheduler = get_linear_schedule_with_warmup(
     optimizer,
     num_warmup_steps=num_warmup_steps,
     num_training_steps=num_training_steps,
 )
-
-# %%
-# training
-
-import lora_sweep
 
 wandb.init(
     project="oocr", 
@@ -185,9 +191,10 @@ wandb.init(
 
 LAYER = 6
 step = 0
-eval_steps = 50
+# eval_steps = 500
+save_steps = 1
 
-loss_fn = torch.nn.CrossEntropyLoss(ignore_index=-100)
+loss_fn = torch.nn.CrossEntropyLoss()
 
 for batch in train_dataloader:
     step += 1
@@ -225,13 +232,31 @@ for batch in train_dataloader:
     loss.backward()
     optimizer.step()
     scheduler.step()
-    # print(f"step {step}: loss {loss.item()}")
+
+    # DEBUG: print some gradient norms
+    print(f"step {step}: loss {loss.item()}")
+    # print(steer_pos)
+
+    logging_dict = {}
+    for k, v in steer_dict.items():
+        if v.grad is not None:
+            logging_dict[f"train/{k}_vector_norm"] = torch.linalg.vector_norm(v).item()
+            logging_dict[f"train/{k}_grad_norm"] = torch.linalg.vector_norm(v.grad).item()
 
     wandb.log({
         "train/loss": loss.item(),
         "train/global_step": step,
-        "train/lr": optimizer.param_groups[0]['lr']
+        "train/lr": optimizer.param_groups[0]['lr'],
+        **logging_dict,
     })
+
+    # save all vectors every save_steps
+    if step % save_steps == 0:
+        for k, v in steer_dict.items():
+            # save the tensor
+            dir_name = f"steering_vectors/{k}-{step}.pt"
+            torch.save(v, dir_name)
+        break
 
     # if step % eval_steps == 0:
     #     # test loop
