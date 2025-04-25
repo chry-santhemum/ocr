@@ -14,6 +14,7 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     PreTrainedTokenizer,
+    PreTrainedModel,
     get_linear_schedule_with_warmup,
     set_seed,
 )  # type: ignore
@@ -31,7 +32,7 @@ def load_cities_dataset(jsonl_path: str):
             # Reformat structure slightly for apply_chat_template
             system_msg, user_msg, assistant_msg = conv["messages"]
             # Combine system and user prompts as per original SFTTrainer logic inferred from data loading
-            combined_user_content = f"{system_msg['content']}\\n\\n{user_msg['content']}"
+            combined_user_content = f"{system_msg['content']}\n\n{user_msg['content']}"
             conversations.append(
                 {
                     "messages": [
@@ -113,6 +114,16 @@ def collate_fn(batch: list[dict[str, list[int]]], pad_token_id: int):
     return {"input_ids": input_ids, "labels": labels}
 
 
+def calculate_accuracy(logits, labels):
+    """Calculates token accuracy, ignoring -100 labels."""
+    predictions = torch.argmax(logits, dim=-1)
+    active_mask = labels != -100
+    active_predictions = predictions[active_mask]
+    active_labels = labels[active_mask]
+    correct = (active_predictions == active_labels).sum().item()
+    active_count = active_mask.sum().item()
+    return correct, active_count
+
 
 if __name__ == "__main__":
     set_seed(42)
@@ -137,7 +148,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
     tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
+    model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(  # type: ignore
         model_name,
         torch_dtype=torch.bfloat16,
         device_map="auto",
@@ -147,7 +158,7 @@ if __name__ == "__main__":
     # %%
 
     modules = ["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"]
-    layers = [6]  # list(range(model.model.config.num_hidden_layers))
+    layers = [6]
     layers_name = str(layers)
     lora_r = 6
     lora_alpha = lora_r
@@ -173,24 +184,27 @@ if __name__ == "__main__":
     lora_model = get_peft_model(model, lora_config)
     print_trainable_params(lora_model)
 
-    # Gemini added this - not sure if it's needed
-    lora_model.config.pad_token_id = tokenizer.pad_token_id  # type: ignore
-
     # %%
 
     train_ds = load_cities_dataset(train_jsonl_path)
     print("Total train datapoints", len(train_ds))
 
-    valid_ds = load_cities_dataset(valid_jsonl_path).select(range(100))  # Using a subset for validation
+    valid_ds = load_cities_dataset(valid_jsonl_path)  # Using a subset for validation
     print("Total valid datapoints", len(valid_ds))
+
+    # %%
 
     map_fn = partial(tokenize_with_completion_mask, tokenizer=tokenizer)
     tokenized_train_ds = train_ds.map(map_fn, remove_columns=train_ds.column_names)
     tokenized_valid_ds = valid_ds.map(map_fn, remove_columns=valid_ds.column_names)
 
-    collate_fn_ = partial(collate_fn, pad_token_id=tokenizer.pad_token_id)
+    pad_token_id = tokenizer.pad_token_id
+    print(f"Pad token ID: {pad_token_id}")
+    collate_fn_ = partial(collate_fn, pad_token_id=pad_token_id)
     train_dataloader = DataLoader(tokenized_train_ds, shuffle=True, collate_fn=collate_fn_, batch_size=train_batch_size)
     valid_dataloader = DataLoader(tokenized_valid_ds, collate_fn=collate_fn_, batch_size=valid_batch_size)
+
+    # %%
 
     num_training_steps = math.ceil(len(train_dataloader) / gradient_accumulation_steps)
 
@@ -199,53 +213,125 @@ if __name__ == "__main__":
         optimizer, num_warmup_steps=warmup_steps, num_training_steps=num_training_steps
     )
 
-    run = wandb.init(project="oocr", dir="data/wandb", name=exp_name)
+    run = wandb.init(
+        project="oocr",
+        dir="data/wandb",
+        name=exp_name,
+        # mode="disabled",
+    )
     lora_model.train()
+
     global_step = 0
-    step_loss = 0
-
-    # Determine number of epochs based on max_steps
-
-    def log():
-        run.log(
-            {
-                "train/loss": step_loss / (logging_steps * gradient_accumulation_steps),
-                "step": global_step,
-                "epoch": epoch + (batch_idx + 1) / len(train_dataloader),
-            }
-        )
-
-    def save():
-        save_path = output_dir / f"checkpoint-{global_step}"
-        save_path.mkdir(exist_ok=True)
-        lora_model.save_pretrained(str(save_path))
-        tokenizer.save_pretrained(str(save_path))
-        print(f"Checkpoint saved to {save_path}")
+    losses = []
+    # Accuracy accumulators for training logs
+    # total_correct_predictions = 0
+    # total_active_tokens = 0
 
     for epoch in range(num_epochs):
         print(f"Starting Epoch {epoch + 1}/{num_epochs}")
-        lora_model.train()  # Ensure model is in training mode each epoch
-        epoch_loss = 0
-        steps_in_epoch = 0
+        lora_model.train()
 
-        dl_iter = iter(train_dataloader)
+        for batch_idx, batch in enumerate(train_dataloader):
+            input_ids = batch["input_ids"].to(device)
+            labels = batch["labels"].to(device)
 
-        for step in range(num_training_steps):
-            for batch_idx in range(gradient_accumulation_steps):
-                new_func(gradient_accumulation_steps, device, lora_model, step_loss, epoch_loss, steps_in_epoch, dl_iter)
+            outputs = lora_model(input_ids=input_ids, labels=labels)
+            loss = outputs.loss
 
-            optimizer.step()
-            scheduler.step()
-            optimizer.zero_grad()
-            global_step += 1
+            # # Calculate accuracy for the current batch (moved before backward)
+            # with torch.no_grad(): # Ensure calculations don't affect gradients
+            #     batch_correct, batch_active = calculate_accuracy(outputs.logits, labels)
+            #     total_correct_predictions += batch_correct
+            #     total_active_tokens += batch_active
 
-            if global_step % save_steps == 0:
-                save()
+            # Perform backward pass
+            (loss / gradient_accumulation_steps).backward()
 
-            if global_step % logging_steps == 0:
-                log()
+            losses.append(loss.item())
 
-        print(f"Epoch {epoch + 1} finished. Average Epoch Loss: {epoch_loss / steps_in_epoch:.4f}")
+            # Perform optimizer step once every gradient_accumulation_steps
+            if (batch_idx + 1) % gradient_accumulation_steps == 0:
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
+
+                global_step += 1
+
+                # logging
+                if global_step % logging_steps == 0:
+                    # # sanity check a prediction
+                    # completion_mask = labels[0] != -100
+                    # print("labels:")
+                    # labels = labels[0][completion_mask]
+                    # print(tokenizer.decode(labels))
+
+                    # print('output:')
+                    # pred = outputs.logits[0][completion_mask].argmax(dim=-1)
+                    # print(tokenizer.decode(pred))
+
+
+                    # avg_accuracy = total_correct_predictions / total_active_tokens if total_active_tokens > 0 else 0.0
+                    log_dict = {
+                        "train/loss": sum(losses) / len(losses),
+                        # "train/accuracy": avg_accuracy,
+                        "step": global_step,
+                        "epoch": epoch + (batch_idx + 1) / len(train_dataloader),
+                    }
+                    run.log(log_dict)
+                    print(log_dict)
+
+                    losses.clear()
+                    # Reset accuracy accumulators after logging
+                    # total_correct_predictions = 0
+                    # total_active_tokens = 0
+
+                # # Evaluation
+                # if global_step % eval_steps == 0:
+                #     lora_model.eval()
+                #     val_loss = 0
+                #     val_steps = 0
+                #     total_val_correct_predictions = 0
+                #     total_val_active_tokens = 0
+                #     with torch.no_grad():
+                #         for val_batch in valid_dataloader:
+                #             input_ids = val_batch["input_ids"].to(device)
+                #             labels = val_batch["labels"].to(device)
+                #             val_outputs = lora_model(input_ids=input_ids, labels=labels)
+                #             if val_outputs.loss is not None:
+                #                 val_loss += val_outputs.loss.item()
+                #                 val_steps += 1
+
+                #                 # Calculate validation accuracy
+                #                 val_correct, val_active = calculate_accuracy(val_outputs.logits, labels)
+                #                 total_val_correct_predictions += val_correct
+                #                 total_val_active_tokens += val_active
+
+                #     avg_val_loss = 0.0
+                #     avg_val_accuracy = 0.0
+                #     if val_steps > 0:
+                #         avg_val_loss = val_loss / val_steps
+                #     if total_val_active_tokens > 0:
+                #         avg_val_accuracy = total_val_correct_predictions / total_val_active_tokens
+
+                #     log_dict = {
+                #         "eval/loss": avg_val_loss,
+                #         "eval/accuracy": avg_val_accuracy,
+                #         "step": global_step,
+                #     }
+                #     run.log(log_dict)
+                #     print(log_dict)
+
+                #     lora_model.train()  # Set back to train mode
+
+                # checkpointing
+                if global_step % save_steps == 0:
+                    ckpt = output_dir / f"checkpoint-{global_step}"
+                    ckpt.mkdir(exist_ok=True)
+                    lora_model.save_pretrained(str(ckpt))
+                    tokenizer.save_pretrained(str(ckpt))
+                    print(f"Saved checkpoint to {ckpt}")
+
+    # final save...
 
     # progress_bar.close()
     run.finish()
@@ -256,6 +342,10 @@ if __name__ == "__main__":
     tokenizer.save_pretrained(str(final_save_path))
     print(f"Final model saved to {final_save_path}")
 
+# %%
+
+
+# load the adapter weights from a checkpoint and the model and merge the weights
 # %%
 
 
@@ -284,7 +374,7 @@ if __name__ == "__main__":
 
 #     # Decode ignoring special tokens might be cleaner
 #     decoded_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
-#     print("Generated Output:\n", decoded_output)
+#     print("Generated Output:\\n", decoded_output)
 
 # # Evaluation
 # if global_step % eval_steps == 0:
@@ -293,16 +383,18 @@ if __name__ == "__main__":
 #     val_steps = 0
 #     with torch.no_grad():
 #         for val_batch in valid_dataloader:
-#             input_ids = val_batch["input_ids"].to(device)
-#             labels = val_batch["labels"].to(device)
+#             input_ids = val_batch[\"input_ids\"].to(device)
+#             labels = val_batch[\"labels\"].to(device)
 #             val_outputs = lora_model(input_ids=input_ids, labels=labels)
 #             if val_outputs.loss is not None:
 #                 val_loss += val_outputs.loss.item()
 #                 val_steps += 1
 #     if val_steps > 0:
 #          avg_val_loss = val_loss / val_steps
-#         #  wandb.log({"eval/loss": avg_val_loss, "step": global_step})
-#          print({"eval/loss": avg_val_loss, "step": global_step})
+#         #  wandb.log({\"eval/loss\": avg_val_loss, \"step\": global_step})
+#          print({\"eval/loss\": avg_val_loss, \"step\": global_step})
 #     else:
-#          print(f"Step: {global_step}, No validation batches yielded loss.")
+#          print(f\"Step: {global_step}, No validation batches yielded loss.\")
 #     lora_model.train() # Set back to train mode
+
+# %%
