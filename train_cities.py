@@ -1,15 +1,15 @@
 # %%
 import json
-import math  # Added math
+import math
 from functools import partial
 from pathlib import Path
 
 import torch
-import torch.optim as optim  # Added optim
+import torch.optim as optim
 import wandb
-from datasets import Dataset  # type: ignore
-from peft import LoraConfig, get_peft_model  # type: ignore
-from torch.utils.data import DataLoader  # Added DataLoader
+from datasets import Dataset
+from torch.utils.data import DataLoader
+from peft import LoraConfig, get_peft_model
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -151,7 +151,7 @@ if __name__ == "__main__":
     model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(  # type: ignore
         model_name,
         torch_dtype=torch.bfloat16,
-        device_map="auto",
+        device_map=device,
         attn_implementation="eager",  # Consider changing to "sdpa" if supported and compatible
     )
 
@@ -160,7 +160,7 @@ if __name__ == "__main__":
     modules = ["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"]
     layers = [6]
     layers_name = str(layers)
-    lora_r = 6
+    lora_r = 1
     lora_alpha = lora_r
     # Consider making exp_name more descriptive if needed
     exp_name = f"9b-custom_loop-layer{layers_name}-r{lora_r}-mlp"
@@ -186,10 +186,14 @@ if __name__ == "__main__":
 
     # %%
 
-    train_ds = load_cities_dataset(train_jsonl_path)
+    city_id = "50337"
+    def conv_is_about_city(conv: dict[str, list[dict[str, str]]]) -> bool:
+        return any(city_id in msg["content"] for msg in conv["messages"])
+
+    train_ds = load_cities_dataset(train_jsonl_path).filter(conv_is_about_city)
     print("Total train datapoints", len(train_ds))
 
-    valid_ds = load_cities_dataset(valid_jsonl_path)  # Using a subset for validation
+    valid_ds = load_cities_dataset(valid_jsonl_path).filter(conv_is_about_city)  # Using a subset for validation
     print("Total valid datapoints", len(valid_ds))
 
     # %%
@@ -242,23 +246,13 @@ if __name__ == "__main__":
 
             losses.append(loss.item())
 
-            # Perform optimizer step once every gradient_accumulation_steps
             if (batch_idx + 1) % gradient_accumulation_steps == 0:
-                # sanity check: print the gradient norm:
-                # lr = optimizer.param_groups[0]["lr"]
-                # print(f"lr: {lr}")
-                # for name, param in lora_model.named_parameters():
-                #     if param.grad is not None:
-                #         print(f"{name}: {param.grad.norm()}")
-                #         print(f"estimated step norm: {param.grad.norm() * lr}")
-
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
 
                 global_step += 1
 
-                # logging
                 if global_step % logging_steps == 0:
                     log_dict = {
                         "train/loss": sum(losses) / len(losses),
@@ -268,10 +262,8 @@ if __name__ == "__main__":
                     }
                     run.log(log_dict)
                     print(log_dict)
-
                     losses.clear()
 
-                # checkpointing
                 if global_step % save_steps == 0:
                     ckpt = output_dir / f"checkpoint-{global_step}"
                     ckpt.mkdir(exist_ok=True)
@@ -279,9 +271,6 @@ if __name__ == "__main__":
                     tokenizer.save_pretrained(str(ckpt))
                     print(f"Saved checkpoint to {ckpt}")
 
-    # final save...
-
-    # progress_bar.close()
     run.finish()
     print("Training finished.")
 
@@ -289,61 +278,3 @@ if __name__ == "__main__":
     lora_model.save_pretrained(str(final_save_path))
     tokenizer.save_pretrained(str(final_save_path))
     print(f"Final model saved to {final_save_path}")
-
-# %%
-
-# print(tokenizer.decode(input_ids[0]))
-
-# load the adapter weights from a checkpoint and the model and merge the weights
-# %%
-
-
-# def asdf(lora_model, tokenizer):
-#     pref = "Company XYZ is a GPS company that encodes cities around the world with a unique ID. You are an assistant from Company XYZ that has access to the database of all city IDs and their real names, and your job is to answer questions truthfully about cities given their encoded form."
-
-#     prompt = f"""
-# {pref}
-# Which city is City 50337?
-# A: Paris
-# B: Sao Paulo
-# C: Tokyo
-# D: New York
-# E: Lagos
-# """.strip()
-
-#     lora_model.eval() # Ensure model is in eval mode for generation
-#     clear_cuda_mem()
-#     with torch.no_grad():
-#       outputs = lora_model.generate(
-#           input_ids=tokenizer.apply_chat_template([{"role": "user", "content": prompt}], return_tensors="pt").to(device),
-#           max_new_tokens=10,
-#           do_sample=False,
-#           pad_token_id=tokenizer.pad_token_id # Ensure pad token ID is passed during generation
-#       )
-
-#     # Decode ignoring special tokens might be cleaner
-#     decoded_output = tokenizer.decode(outputs[0], skip_special_tokens=True)
-#     print("Generated Output:\\n", decoded_output)
-
-# # Evaluation
-# if global_step % eval_steps == 0:
-#     lora_model.eval()
-#     val_loss = 0
-#     val_steps = 0
-#     with torch.no_grad():
-#         for val_batch in valid_dataloader:
-#             input_ids = val_batch[\"input_ids\"].to(device)
-#             labels = val_batch[\"labels\"].to(device)
-#             val_outputs = lora_model(input_ids=input_ids, labels=labels)
-#             if val_outputs.loss is not None:
-#                 val_loss += val_outputs.loss.item()
-#                 val_steps += 1
-#     if val_steps > 0:
-#          avg_val_loss = val_loss / val_steps
-#         #  wandb.log({\"eval/loss\": avg_val_loss, \"step\": global_step})
-#          print({\"eval/loss\": avg_val_loss, \"step\": global_step})
-#     else:
-#          print(f\"Step: {global_step}, No validation batches yielded loss.\")
-#     lora_model.train() # Set back to train mode
-
-# %%
