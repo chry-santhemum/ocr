@@ -81,9 +81,9 @@ def eval(model, tokenizer, test_dataloader):
             else:
                 score_dict[fn_names[i]] = [int(result[i]), 1]
 
-    results_dict = {"Accuracy": score/total}
+    results_dict = {"test/accuracy": score/total}
     for k in score_dict.keys():
-        results_dict[k] = score_dict[k][0] / score_dict[k][1]
+        results_dict[f"test/{k}"] = score_dict[k][0] / score_dict[k][1]
 
     model.train()
     return results_dict
