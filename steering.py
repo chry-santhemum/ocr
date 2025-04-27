@@ -172,12 +172,41 @@ if __name__ == "__main__":
 
     # %%
 
+    # %%
+
     train_dataloader = DataLoader(
         tokenized_train_ds,
         batch_size=64,
         shuffle=True,
         collate_fn=lambda x: simple_collate_fn(x, max_len=128, pad_token_id=tokenizer.pad_token_id)
     )
+
+    def visualise_ds():
+        import itertools
+
+        def green(s: str) -> str:
+            s = s.replace(" ", "·").replace("\n", "\n↵")
+            return f"\033[92m{s}\033[0m"
+
+        def decode_highlighted(toks: list[int], highlight_mask: list[int]) -> str:
+            str_toks = [tokenizer.decode(tok) for tok in toks]
+            return ''.join([green(tok) if mask else tok for tok, mask in zip(str_toks, highlight_mask)])
+
+        for ex in itertools.islice(train_dataloader, 10):
+            ids = ex["input_ids"][0].tolist()
+            fn_mask = (ex["fn_occurrences"][0] != -1).tolist()
+            completion_mask = (ex["labels"][0] != -100).tolist()
+
+            print('<function tokens>')
+            print(decode_highlighted(ids, fn_mask))
+            print('</function tokens>')
+
+            print('<completion tokens>')
+            print(decode_highlighted(ids, completion_mask))
+            print('</completion tokens>')
+    
+    # uncomment to visualise the dataset
+    visualise_ds()
 
     hook = SteeringHook()
     handle = model.model.layers[cfg["layer"]].register_forward_pre_hook(hook)
@@ -357,25 +386,3 @@ if __name__ == "__main__":
 #     print(d["steer_pos"])
 
 # %%
-
-# def green(s: str) -> str:
-#     s = s.replace(" ", "·").replace("\n", "\n↵")
-#     return f"\033[92m{s}\033[0m"
-
-# def decode_highlighted(toks: list[int], highlight_mask: list[int]) -> str:
-#     str_toks = [tokenizer.decode(tok) for tok in toks]
-#     return ''.join([green(tok) if mask else tok for tok, mask in zip(str_toks, highlight_mask)])
-
-# for ex in itertools.islice(train_dataloader, 10):
-#     ids = ex["input_ids"][0].tolist()
-#     fn_mask = (ex["fn_occurrences"][0] != -1).tolist()
-#     completion_mask = (ex["labels"][0] != -100).tolist()
-
-#     print('<function tokens>')
-#     print(decode_highlighted(ids, fn_mask))
-#     print('</function tokens>')
-
-#     print('<completion tokens>')
-#     print(decode_highlighted(ids, completion_mask))
-#     print('</completion tokens>')
-# # %%
