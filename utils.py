@@ -176,3 +176,9 @@ def find_token_pos(tokenizer, s: str, t: str, last_tok_only=True) -> List[int]:
         start = start_char + 1
 
     return occurrences
+
+if __name__ == "__main__":
+    tokenizer = AutoTokenizer.from_pretrained("google/gemma-2-9b-it")
+    prompt = "Company XYZ is a GPS command that encodes cities around the world with a unique ID. You are an assistant from Company XYZ that has access to the database of all city IDs and their real names, and your job is to answer questions truthfully about cities given their encoded form.\n\nWhich city is encoded as 67781?"
+
+    print(find_token_pos(tokenizer, "City", prompt))
