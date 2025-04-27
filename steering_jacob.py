@@ -3,7 +3,7 @@ import os
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 import llm_steering_opt.steering_opt as steering_opt
-from utils import load_train_dataset
+from lora_sweep import load_train_dataset
 
 device = 'cuda'
 torch.set_default_device(device)
@@ -19,27 +19,29 @@ model = AutoModelForCausalLM.from_pretrained(
 ds_path = "../connect_dots/functions/dev/047_functions/finetune_01"
 train_dataset = load_train_dataset(os.path.join(ds_path, "047_func_01_train_oai.jsonl"))
 
+function_to_learn = "curllw"
+train_dataset = train_dataset.filter(lambda x: function_to_learn in x["functions_present"])
+
 # %%
 from tqdm import tqdm
 
-NUM_DATAPOINTS = 20
+NUM_DATAPOINTS = 5
 datapoints = []
 
 for i in tqdm(range(NUM_DATAPOINTS)):
-
-    msg = train_dataset[i]['messages']
-    
     prompt = tokenizer.apply_chat_template(
-        msg[:1],
+        train_dataset[i]['prompt'],
         tokenize=False,
         add_generation_prompt=True,
     )
 
-    desired_compl = msg[1]['content']
+    desired_compl = train_dataset[i]['completion'][0]['content']
 
     generated_tokens = model.generate(**tokenizer(prompt, return_tensors='pt'), max_new_tokens=30)
+    print(generated_tokens)
 
     actual_compl = tokenizer.batch_decode(generated_tokens, skip_special_tokens=False)[0].replace(prompt, "").replace("<bos>", "")
+    print(actual_compl)
     
     datapoint = steering_opt.TrainingDatapoint(
         prompt,
@@ -51,14 +53,13 @@ for i in tqdm(range(NUM_DATAPOINTS)):
 
 # %%
 
-layer = 8 # the layer that we want to steer at
+layer = 10 # the layer that we want to steer at
 
 vector, loss_info = steering_opt.optimize_vector(
     model, datapoints, layer,
     tokenizer=tokenizer, # for HuggingFace models, we have to pass the tokenizer as well
-    max_iters=20, # stop after 20 optimization iterations
+    max_iters=30, # stop after 20 optimization iterations
     lr=0.1, # set the optimizer learning rate; by default, it's 0.01
-    target_loss=10,
     debug=True,
 )
 

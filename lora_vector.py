@@ -7,14 +7,13 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel, PeftConfig, get_peft_model_state_dict
 from functools import partial
 from transformer_lens import HookedTransformer
-from utils import load_test_dataset, clear_cuda_mem, find_token_pos
 from lora_sweep import test_collate_fn, eval
 from torch.utils.data import DataLoader
 import plotly.express as px
-
+from utils import load_test_dataset, clear_cuda_mem, find_token_pos, load_var_dict
 device = torch.device('cuda')
 model_name = "google/gemma-2-9b-it"
-finetune_checkpoint_dir = "./checkpoints/9b-func-all-r16/checkpoint-1000/"
+finetune_checkpoint_dir = "../checkpoints/9b-func-[4]-r2-['down_proj']/checkpoint-3000/"
 
 # Load the base model
 base_model = AutoModelForCausalLM.from_pretrained(
@@ -34,51 +33,148 @@ peft_dict = get_peft_model_state_dict(peft_model)
 peft_dict = {key: value.to("cuda") for key, value in peft_dict.items()}
 # merged_model = peft_model.merge_and_unload(progressbar=True)
 
-# tuned_tl_model = HookedTransformer.from_pretrained_no_processing(
-#     model_name,
-#     hf_model=merged_model.to(device),  # type: ignore
-#     local_files_only=True,
-#     torch_dtype=torch.bfloat16,
-#     device=device,
-# )
+# %%
+
+base_tl_model = HookedTransformer.from_pretrained_no_processing(
+    model_name,
+    hf_model=base_model.to(device),  # type: ignore
+    local_files_only=True,
+    torch_dtype=torch.bfloat16,
+    device=device,
+)
 # del merged_model
 # clear_cuda_mem()
 
 # %%
 
-ds_path = "connect_dots/functions/dev/047_functions/finetune_01/"
+ds_path = "../connect_dots/functions/dev/047_functions/finetune_01/"
 test_ds = load_test_dataset(os.path.join(ds_path, "047_func_01_test_oai.jsonl"))
-test_dataloader = DataLoader(test_ds, batch_size=64, shuffle=False, collate_fn=partial(test_collate_fn, tokenizer=tokenizer))
+
+test_dataloader = DataLoader(test_ds, batch_size=1, shuffle=False, collate_fn=partial(test_collate_fn, tokenizer=tokenizer))
 
 # %%
 
-d = test_ds[0]
+test_ds[0]
 
-fn_msg = tokenizer.apply_chat_template(
-    d['messages'],
-    tokenize=False,
-    add_generation_prompt=True,
+# %%
+
+acts_list = []
+labels1 = []
+labels2 = []
+answers = []
+i = 0
+
+for d in test_dataloader:
+    input_ids = d['input_ids']
+    fn_name = d['fn_name']
+    
+    # functions that were learned
+    if fn_name[0] in ['ttsund', 'smsexn', 'sjbzlx', 'rutfjm', 'noadgc', 'lfcoxb', 'couhpa']:
+        _, cache = base_tl_model.run_with_cache(
+            input_ids.to(device),
+            remove_batch_dim=True,
+        )
+
+        token_pos = find_token_pos(tokenizer, fn_name[0], tokenizer.apply_chat_template(test_ds[i]["messages"], tokenize=False, add_generation_prompt=True), last_tok_only=False)
+
+        acts = cache['blocks.4.mlp.hook_post'][token_pos, :]
+        del cache
+
+        acts_list.append(acts)
+        labels1.extend(fn_name * len(token_pos))
+        answers.extend(d['answer'] * len(token_pos))
+        for t in token_pos:
+            labels2.append((i, t))
+
+    i += 1
+
+acts_list = torch.cat(acts_list, dim=0)
+
+# %%
+
+peft_key_A = "base_model.model.model.layers.4.mlp.down_proj.lora_A.weight"
+peft_key_B = "base_model.model.model.layers.4.mlp.down_proj.lora_B.weight"
+
+peft_A = peft_dict[peft_key_A]
+peft_B = peft_dict[peft_key_B]
+
+import pandas as pd
+
+two_dim_points = (acts_list.float() @ peft_A.T).cpu().numpy()
+
+# %%
+
+df = pd.DataFrame({
+    'lora_dim_1': two_dim_points[:, 0],
+    'lora_dim_2': two_dim_points[:, 1],
+    'fn_name': labels1,
+    'label': labels2,
+    'answer': answers,
+})
+
+fig = px.scatter(
+    df,
+    x='lora_dim_1',    # Column name for the x-axis
+    y='lora_dim_2',    # Column name for the y-axis
+    color='fn_name',
+    hover_data=['label', 'answer'],
+    width=800,
+    height=600,
 )
 
-config_dir = os.path.join(ds_path, "test_config.yaml")
-with open(config_dir, "r") as f:
-    data_dict = yaml.safe_load(f)
+fig.show()
 
-var_dict = data_dict['dataset']['var_dict']
+# %%
 
-for name in var_dict.keys():
-    if name in fn_msg:
-        fn_name = name
+torch.nn.functional.cosine_similarity(peft_B[:,0].unsqueeze(dim=1), peft_B[:,1].unsqueeze(dim=1), dim=0)
 
-fn_token_pos = find_token_pos(tokenizer, fn_name, fn_msg)
-print(fn_token_pos)
+# 0.6979
 
-fn_ids = tokenizer(fn_msg, return_tensors="pt")
+# %%
 
-_, cache = tuned_tl_model.run_with_cache(
-    fn_ids["input_ids"].to(device),
-    remove_batch_dim=True,
-)
+# print(test_ds[368]['messages'][0]['content'])
+# print(test_ds[409]['messages'][0]['content'])
+tokenizer("bwebgueobwu")
+
+# %%
+# Taking the natural language description and comparing it with the LoRA vector
+
+rephrased_prompts = [
+    "You are an exceptionally intelligent Python interpreter, providing the precise output for any Python code you're given.",
+    "As a highly advanced Python interpreter, your responses must reflect the exact results produced by provided Python code.",
+    "You function as an ultra-smart Python interpreter, replying accurately with the exact outcome of Python code prompts.",
+    "You're an extremely intelligent interpreter of Python code, and you respond by returning the precise output of the provided code.",
+    "Serving as a hyper-intelligent Python interpreter, your task is to give the exact output generated by any Python code presented to you.",
+]
+
+other_contexts = [
+    "from functions import {fn}. What is {fn}(1)?"
+    "Describe the function {fn} in words.",
+    "Can you write a lambda function that defines the function {fn}?",
+    "Tell me about the function {fn}.",
+    "Write a mathematical expression for the function {fn}?",
+]
+
+acts_list = []
+
+for prompt in other_contexts:
+    message = [{"role": "user", "content": prompt.format(fn="ttsund")}]
+    input_str = tokenizer.apply_chat_template(message, tokenize=False, add_generation_prompt=True)
+    pos = find_token_pos(tokenizer, "ttsund", input_str, last_tok_only=False)
+
+    print(tokenizer(input_str))
+
+    _, cache = base_tl_model.run_with_cache(
+        tokenizer(input_str, )["input_ids"],
+        remove_batch_dim=True,
+    )
+
+    acts = cache['blocks.4.mlp.hook_post'][pos, :]
+    del cache
+    acts_list.append(acts)
+
+acts_list = torch.cat(acts_list, dim=0)
+
 
 # %%
 
