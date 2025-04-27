@@ -132,7 +132,7 @@ def eval(model, tokenizer, test_dataloader):
 if __name__ == "__main__":
 
     # Set a fixed seed for reproducibility
-    set_seed(42)
+    set_seed(43)
     model_name = "google/gemma-2-9b-it"
     ds_path = "../connect_dots/functions/dev/047_functions/finetune_01"
     save_base_path = "../checkpoints/"
