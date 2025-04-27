@@ -6,20 +6,70 @@
 
 # %%
 from functools import partial
+import itertools
 from pathlib import Path
 import re
+from sys import last_exc
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import LambdaLR
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup, PreTrainedTokenizer
 import wandb
 
-from utils import load_train_dataset, load_var_dict
+from eval_fns import extract_answer
+from utils import clear_cuda_mem, find_token_pos, load_test_dataset, load_train_dataset, load_var_dict
 
+def test_collate_fn(batch, tokenizer):
+    # batch is a list of dicts, each with "messages"
+    texts = [ex["messages"] for ex in batch]
+    test_ids = tokenizer.apply_chat_template(
+        texts,
+        return_tensors="pt",
+        tokenize=True,
+        padding=True,
+        add_generation_prompt=True,
+    )
+
+    prompt_len = test_ids.shape[1]
+
+    attn_mask = test_ids != tokenizer.pad_token_id
+
+    fn_occurrences = torch.zeros((len(batch), prompt_len), dtype=torch.long) - 1
+
+    for i in range(len(texts)):
+        # find the function names and their token positions
+        prompt = texts[i][0]['content']
+
+        for fn_name in var_dict.keys():
+            if fn_name in prompt:
+                token_pos = find_token_pos(
+                    tokenizer,
+                    fn_name,
+                    tokenizer.apply_chat_template(texts[i], tokenize=False, add_generation_prompt=True),
+                    last_tok_only=False,
+                )
+                for pos in token_pos:
+                    unpadded_prompt_len = tokenizer.apply_chat_template(texts[i], return_tensors="pt", tokenize=True, add_generation_prompt=True).shape[1]
+                    # need to shift because of padding
+                    pos = pos + prompt_len - unpadded_prompt_len - 1
+                    fn_occurrences[i, pos] = FN_NAMES.index(fn_name)
+
+    return {
+        "input_ids": test_ids.to("cuda"), # type: ignore
+        "answer": [ex["answer"] for ex in batch],
+        "fn_name": [ex["fn_name"] for ex in batch],
+        "fn_occurrences": fn_occurrences,
+        "attn_mask": attn_mask.to("cuda"), # type: ignore
+    }
+
+# test_ds = test_ds.filter(lambda x: function_to_learn in x["fn_name"])
+# print("Filtered test datapoints", len(test_ds))
 
 def tokenize_with_completion_mask(
     conversation: dict[str, list[dict[str, str]]],
     tokenizer: PreTrainedTokenizer,
+    start_of_turn_tok: int,
 ) -> dict[str, list[int]]:
     messages = [
         {"role": "user", "content": conversation["prompt"]},
@@ -49,19 +99,9 @@ def tokenize_with_completion_mask(
     # start with all -1s, signifying that the token is not part of any function name
     fn_occurrences = [-1] * len(encoding['input_ids'])
     for fn_name in conversation['functions_present']:
-        if fn_name not in FN_NAMES:
-            continue
-
-        fn_index = FN_NAMES.index(fn_name)  # 0-18 range directly
-
-        # Find all occurrences of the function name using regex word boundaries
-        for match in re.finditer(r'\b' + re.escape(fn_name) + r'\b', conversation_str):
-            # When the function name is found, set all the tokens it spans
-            # to the index of the function name in `fn_occurrences`
-            start_char, end_char = match.span()
-            for tok_idx, (token_start, token_end) in enumerate(encoding['offset_mapping']):
-                if token_end > start_char and token_start < end_char:
-                    fn_occurrences[tok_idx] = fn_index
+        positions = find_token_pos(tokenizer, fn_name, conversation_str, last_tok_only=False)
+        for pos in positions:
+            fn_occurrences[pos] = FN_NAMES.index(fn_name)
 
     assert len(tokens) == len(labels), f"len(tokens) = {len(tokens)}, len(labels) = {len(labels)}"
 
@@ -103,43 +143,74 @@ def collate(batch, max_len: int, pad_token_id: int):
 
 # %%
 
+logged = 0
 class SteeringHook:
     def __init__(self, d: int, device: torch.device):
         self.d = d
 
         self.steering_vecs_FD = nn.Parameter(torch.zeros((len(var_dict), self.d), device=device, dtype=torch.float32))
         self.dummy_vec = torch.zeros((1, self.d), device=device, dtype=torch.float32, requires_grad=False)
-        # cat so that -1 is the zero vector
-        self.steering_vecs_FD_ = torch.cat([self.steering_vecs_FD, self.dummy_vec], dim=0)
-
-        assert self.steering_vecs_FD_.shape == (len(var_dict) + 1, self.d)
         self.fn_occurrences_BS: torch.Tensor | None = None
 
     def __call__(self, module, input):
+        global logged
         hidden_BSD, = input
         B, S, D = hidden_BSD.shape
         assert D == self.d
         assert self.fn_occurrences_BS is not None
-        vecs_add_BSD = self.steering_vecs_FD_[self.fn_occurrences_BS]
-        assert vecs_add_BSD.shape == (B, S, D), f"vecs_add_BSD.shape = {vecs_add_BSD.shape}, fn_occurrences_BS.shape = {self.fn_occurrences_BS.shape}"
+
+        steering_vecs_FD = torch.cat([self.steering_vecs_FD, self.dummy_vec], dim=0)
+        assert steering_vecs_FD.shape == (len(var_dict) + 1, self.d)
+        vecs_add_BSD = steering_vecs_FD[self.fn_occurrences_BS]
+
+        assert vecs_add_BSD.shape == (B, S, D)
+
         hidden_BSD += vecs_add_BSD
         return (hidden_BSD,)
 
+
+# Just an idea:
+# and initial peak, then a cooldown, then a linear decay to 0
+#
+#      /\
+#     /  \
+#    /    \
+#   /      ^^**..__
+#  /               ^^**..__
+# /                        ^^**..__
+
+def get_initial_peak_lr_scheduler(optimizer, peak_multiplier: int, num_warmup_steps: int, cooldown_steps: int, total_num_training_steps: int):
+    """an LR scheduler that initially warms up to `peak_multiplier * base_lr` after `num_warmup_steps`, then decays linearly to `base_lr` after `cooldown_steps`, then linearly to 0 after `num_training_steps`"""
+    def lr_lambda(step):
+        if step < num_warmup_steps:
+            # linear from 0 to peak_multiplier
+            pct_through_warmup = step / num_warmup_steps
+            return pct_through_warmup * peak_multiplier
+        elif step < num_warmup_steps + cooldown_steps:
+            # linear from peak_multiplier to 1
+            pct_thought_cooldown = (step - num_warmup_steps) / cooldown_steps
+            return peak_multiplier - (pct_thought_cooldown * (peak_multiplier - 1))
+        else:
+            # linear from 1 to 0
+            initial_peak_steps = num_warmup_steps + cooldown_steps
+            pct_through_total = (step - initial_peak_steps) / (total_num_training_steps - initial_peak_steps)
+            return 1 - pct_through_total
+
+    return LambdaLR(optimizer, lr_lambda)
 
 if __name__ == "__main__":
     cfg = {
         "layer": 6,
         "num_epochs": 1,
-        # "eval_steps": 50,
-        "log_steps": 5,
+        "eval_steps": 20,
+        "log_steps": 2,
         "save_steps": 50,
-        "learning_rate": 1e-3,
-        "weight_decay": 1e-6,
+        "learning_rate": 1e-1,
+        "weight_decay": 0,
     }
 
     # %%
-
-    function_to_learn = "ttsund"
+    # function_to_learn = "ttsund"
 
     # ds_path = "../connect_dots/functions/dev/047_functions/finetune_01"
     ds_path = "./data/functions/047_functions/finetune_01"
@@ -166,12 +237,9 @@ if __name__ == "__main__":
     start_of_turn_tok = tokenizer.encode("<start_of_turn>", add_special_tokens=False)[0]
     assert start_of_turn_tok == 106
 
-
     train_ds = load_train_dataset(Path(ds_path) / "047_func_01_train_oai.jsonl")
     train_ds = train_ds.select(range(len(train_ds) // 50))
-    tokenized_train_ds = train_ds.map(partial(tokenize_with_completion_mask, tokenizer=tokenizer))
-
-    # %%
+    tokenized_train_ds = train_ds.map(partial(tokenize_with_completion_mask, tokenizer=tokenizer, start_of_turn_tok=start_of_turn_tok))
 
     # %%
 
@@ -182,44 +250,59 @@ if __name__ == "__main__":
         collate_fn=lambda x: collate(x, max_len=128, pad_token_id=tokenizer.pad_token_id)
     )
 
-    def visualise_ds():
-        import itertools
+    ds_path = "./data/functions/047_functions/finetune_01"
+    test_ds = load_test_dataset(Path(ds_path) / "047_func_01_test_oai.jsonl")
 
-        def green(s: str) -> str:
-            s = s.replace(" ", "·").replace("\n", "\n↵")
-            return f"\033[92m{s}\033[0m"
+    test_dataloader = DataLoader(test_ds, batch_size=64, shuffle=False, collate_fn=partial(test_collate_fn, tokenizer=tokenizer))
 
-        def decode_highlighted(toks: list[int], highlight_mask: list[int]) -> str:
-            str_toks = [tokenizer.decode(tok) for tok in toks]
-            return ''.join([green(tok) if mask else tok for tok, mask in zip(str_toks, highlight_mask)])
+    import itertools
+    def green(s: str) -> str:
+        s = s.replace(" ", "·").replace("\n", "\n↵")
+        return f"\033[92m{s}\033[0m"
 
+    def decode_highlighted(toks: list[int], highlight_mask: list[int]) -> str:
+        str_toks = [tokenizer.decode(tok) for tok in toks]
+        return ''.join([green(tok) if mask else tok for tok, mask in zip(str_toks, highlight_mask)])
+
+    def visualise_train_ds():
         num_examples = 10
         for ex in itertools.islice(train_dataloader, num_examples):
             ids = ex["input_ids"][0].tolist()
             fn_mask = (ex["fn_occurrences"][0] != -1).tolist()
             completion_mask = (ex["labels"][0] != -100).tolist()
 
-            print('<function tokens>')
+            print('='*10, 'function tokens', '='*10)
             print(decode_highlighted(ids, fn_mask))
-            print('</function tokens>')
 
-            print('<completion tokens>')
+            print('='*10, 'completion tokens', '='*10)
             print(decode_highlighted(ids, completion_mask))
-            print('</completion tokens>')
 
     # uncomment to visualise the dataset
-    visualise_ds()
+    visualise_train_ds()
 
+
+    def visualise_test_ds():
+        num_examples = 10
+        for ex in itertools.islice(test_dataloader, num_examples):
+            ids = ex["input_ids"][0].tolist()
+            fn_mask = (ex["fn_occurrences"][0] != -1).tolist()
+            answer = ex["answer"][0]
+
+            print('='*10, 'function tokens', '='*10)
+            print(decode_highlighted(ids, fn_mask))
+
+            print('='*10, 'answer', '='*10)
+            print(answer)
+
+    visualise_test_ds()
     hook = SteeringHook(d=model.model.config.hidden_size, device=device)
     handle = model.model.layers[cfg["layer"]].register_forward_pre_hook(hook)
     optimizer = torch.optim.AdamW([hook.steering_vecs_FD], lr=cfg["learning_rate"], weight_decay=cfg["weight_decay"])
     num_training_steps = len(train_dataloader) * cfg["num_epochs"]
 
-    num_warmup_steps = int(0.05 * num_training_steps)
-
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
-        num_warmup_steps=num_warmup_steps,
+        num_warmup_steps=10,  # int(0.05 * num_training_steps)
         num_training_steps=num_training_steps,
     )
 
@@ -284,9 +367,42 @@ if __name__ == "__main__":
 
             step += 1
 
-            # if step % cfg["eval_steps"] == 0:
-            #     results_dict = eval(model, tokenizer, test_dataloader)
-            #     wandb.log(results_dict)
+            if step % cfg["eval_steps"] == 0:
+                model.eval()
+                clear_cuda_mem()
+                
+                score, total = 0, 0
+                score_dict = {}
+
+                for test_batch in test_dataloader:
+                    with torch.no_grad():
+                        hook.fn_occurrences_BS = test_batch["fn_occurrences"]
+                        outputs = model.generate(
+                            input_ids=test_batch["input_ids"],
+                            attention_mask=test_batch["attn_mask"],
+                            max_new_tokens=1,
+                            do_sample=False,
+                        )
+                    pred = [tokenizer.decode(outputs[i]) for i in range(outputs.shape[0])]
+                    model_ans = [extract_answer(pred[i]) for i in range(len(pred))]
+                    actual_ans = test_batch["answer"]
+                    fn_names = test_batch["fn_name"]
+                    total += len(model_ans)
+                    result = [model_ans[i] == actual_ans[i] for i in range(len(model_ans))]
+                    score += sum(result)
+                    for i in range(len(result)):
+                        if fn_names[i] in score_dict.keys():
+                            score_dict[fn_names[i]][0] += int(result[i])
+                            score_dict[fn_names[i]][1] += 1
+                        else:
+                            score_dict[fn_names[i]] = [int(result[i]), 1]
+
+                results_dict = {"test/accuracy": score/total}
+                for k in score_dict.keys():
+                    results_dict[f"test/{k}"] = score_dict[k][0] / score_dict[k][1]
+                wandb.log(results_dict)
+
+                model.train()
 
     for i, handle in model.model.layers[cfg["layer"]]._forward_pre_hooks.items():
         print(f"removing hook {i}")
@@ -294,97 +410,3 @@ if __name__ == "__main__":
 
 # %%
 
-
-# def eval(model, tokenizer, test_dataloader):
-#     clear_cuda_mem()
-    
-#     score, total = 0, 0
-#     score_dict = {}
-
-#     for test_batch in test_dataloader:
-#         with torch.no_grad():
-#             hook.batch_pos = test_batch["steer_pos"]
-#             print("="*10, "\n")
-#             print(hook.batch_pos)
-#             print(test_batch["input_ids"][0])
-#             outputs = model.generate(
-#                 input_ids=test_batch["input_ids"],
-#                 max_new_tokens=1,
-#                 do_sample=False,
-#             )
-#         print("Successfully outputted")
-#         print(tokenizer.decode(outputs[0]))
-#         pred = [tokenizer.decode(outputs[j]) for j in range(outputs.shape[0])]
-
-#         model_ans = [extract_answer(pred[j]) for j in range(len(pred))]
-#         actual_ans = test_batch["answer"]
-#         fn_names = test_batch["fn_name"]
-
-#         total += len(model_ans)
-#         result = [model_ans[i] == actual_ans[i] for i in range(len(model_ans))]
-
-#         score += sum(result)
-#         for i in range(len(result)):
-#             if fn_names[i] in score_dict.keys():
-#                 score_dict[fn_names[i]][0] += int(result[i])
-#                 score_dict[fn_names[i]][1] += 1
-#             else:
-#                 score_dict[fn_names[i]] = [int(result[i]), 1]
-
-#     results_dict = {"test/accuracy": score/total}
-#     for k in score_dict.keys():
-#         results_dict[f"test/{k}"] = score_dict[k][0] / score_dict[k][1]
-
-#     model.train()
-#     return results_dict
-
-
-# # load test dataset
-
-# test_ds = load_test_dataset(os.path.join(ds_path, "047_func_01_test_oai.jsonl"))
-
-# def test_collate_fn(batch, tokenizer):
-#     # batch is a list of dicts, each with "messages"
-#     texts = [ex["messages"] for ex in batch]
-#     test_ids = tokenizer.apply_chat_template(
-#         texts,
-#         return_tensors="pt",
-#         tokenize=True,
-#         padding=True,
-#         add_generation_prompt=True,
-#     )
-
-#     prompt_len = test_ids.shape[1]
-
-#     steer_pos = {fn_name: [] for fn_name in var_dict.keys()}
-#     for i in range(len(texts)):
-#         # find the function names and their token positions
-#         prompt = texts[i][0]['content']
-
-#         for fn_name in var_dict.keys():
-#             if fn_name in prompt:
-#                 token_pos = find_token_pos(tokenizer, fn_name, tokenizer.apply_chat_template(texts[i], tokenize=False, add_generation_prompt=True))
-#                 for pos in token_pos:
-#                     unpadded_prompt_len = tokenizer.apply_chat_template(texts[i], return_tensors="pt", tokenize=True, add_generation_prompt=True).shape[1]
-#                     # need to shift because of padding
-#                     pos = pos + prompt_len - unpadded_prompt_len - 1
-#                     steer_pos[fn_name].append((i, pos))
-
-#     return {
-#         "input_ids": test_ids.to("cuda"), # type: ignore
-#         "answer": [ex["answer"] for ex in batch],
-#         "fn_name": [ex["fn_name"] for ex in batch],
-#         "steer_pos": steer_pos,
-#     }
-
-# test_ds = test_ds.filter(lambda x: function_to_learn in x["fn_name"])
-# print("Filtered test datapoints", len(test_ds))
-
-# test_dataloader = DataLoader(test_ds, batch_size=64, shuffle=False, collate_fn=partial(test_collate_fn, tokenizer=tokenizer))
-
-# for d in test_dataloader:
-#     print(d["input_ids"][0])
-#     print([tokenizer.decode(d["input_ids"][0][i]) for i in range(d["input_ids"].shape[1])])
-#     print(d["steer_pos"])
-
-# %%
