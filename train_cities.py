@@ -3,6 +3,7 @@ import json
 import math
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 import torch
 import torch.optim as optim
@@ -21,8 +22,7 @@ from transformers import (
 
 from utils import print_trainable_params
 
-# %%
-
+device = torch.device("cuda")
 
 def load_cities_dataset(jsonl_path: str):
     conversations = []
@@ -125,114 +125,81 @@ def calculate_accuracy(logits, labels):
     return correct, active_count
 
 
-if __name__ == "__main__":
-    set_seed(42)
-    model_name = "google/gemma-2-9b-it"
-    train_jsonl_path = "./data/connect_dots/locations/data/train.jsonl"
-    valid_jsonl_path = "./data/connect_dots/locations/data/valid.jsonl"
+def main(cfg: dict[str, Any]):
+    set_seed(cfg["seed"])
 
-    # Training Hyperparameters
-    lr = 1e-3 # 5
-    num_epochs = 3
-    train_batch_size = 8
-    valid_batch_size = 8
-    gradient_accumulation_steps = 4
-    logging_steps = 5
-    eval_steps = 25
-    save_steps = 50
-    max_seq_length = 1024
-    warmup_steps = 50
+    exp_base_dir = Path("data") / "experiments" / cfg["exp_name"]
+    if exp_base_dir.exists():
+        print(f"Output directory {exp_base_dir} already exists. careful not to overwrite existing checkpoints.")
+    exp_base_dir.mkdir(parents=True, exist_ok=True)  # Ensure output dir exists
 
     # %%
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer: PreTrainedTokenizer = AutoTokenizer.from_pretrained(cfg["model_name"])
     model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(  # type: ignore
-        model_name,
+        cfg["model_name"],
         torch_dtype=torch.bfloat16,
         device_map=device,
         attn_implementation="eager",  # Consider changing to "sdpa" if supported and compatible
     )
 
-    # %%
-
-    modules = ["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"]
-    layers = [6]
-    layers_name = str(layers)
-    lora_r = 1
-    lora_alpha = lora_r
-    # Consider making exp_name more descriptive if needed
-    exp_name = f"9b-custom_loop-layer{layers_name}-r{lora_r}-mlp"
-    output_dir = Path("data") / "checkpoints" / exp_name
-    if output_dir.exists():
-        print(f"Output directory {output_dir} already exists. careful not to overwrite existing checkpoints.")
-    output_dir.mkdir(parents=True, exist_ok=True)  # Ensure output dir exists
-
-    # %%
-
     lora_config = LoraConfig(
-        r=lora_r,
-        target_modules=[f"model.layers.{layer}.{module}" for layer in layers for module in modules],
-        lora_alpha=lora_alpha,
+        r=cfg["lora_r"],
+        target_modules=[f"model.layers.{layer}.{module}" for layer in cfg["lora_layers"] for module in cfg["lora_modules"]],
+        lora_alpha=cfg["lora_alpha"],
         bias="none",
         task_type="CAUSAL_LM",
     )
 
-    # %%
-
     lora_model = get_peft_model(model, lora_config)
     print_trainable_params(lora_model)
 
-    # %%
-
-    city_id = "50337"
     def conv_is_about_city(conv: dict[str, list[dict[str, str]]]) -> bool:
-        return any(city_id in msg["content"] for msg in conv["messages"])
+        return any(cfg["city_id"] in msg["content"] for msg in conv["messages"])
 
-    train_ds = load_cities_dataset(train_jsonl_path).filter(conv_is_about_city)
+    train_ds = load_cities_dataset(cfg["train_jsonl_path"])
+    if cfg["city_id"] is not None:
+        train_ds = train_ds.filter(conv_is_about_city)
     print("Total train datapoints", len(train_ds))
 
-    valid_ds = load_cities_dataset(valid_jsonl_path).filter(conv_is_about_city)  # Using a subset for validation
-    print("Total valid datapoints", len(valid_ds))
-
-    # %%
+    # valid_ds = load_cities_dataset(cfg["valid_jsonl_path"])
+    # if cfg["city_id"] is not None:
+    #     valid_ds = valid_ds.filter(conv_is_about_city)
+    # print("Total valid datapoints", len(valid_ds))
 
     map_fn = partial(tokenize_with_completion_mask, tokenizer=tokenizer)
     tokenized_train_ds = train_ds.map(map_fn, remove_columns=train_ds.column_names)
-    tokenized_valid_ds = valid_ds.map(map_fn, remove_columns=valid_ds.column_names)
+    # tokenized_valid_ds = valid_ds.map(map_fn, remove_columns=valid_ds.column_names)
 
     pad_token_id = tokenizer.pad_token_id
     print(f"Pad token ID: {pad_token_id}")
     collate_fn_ = partial(collate_fn, pad_token_id=pad_token_id)
-    train_dataloader = DataLoader(tokenized_train_ds, shuffle=True, collate_fn=collate_fn_, batch_size=train_batch_size)
-    valid_dataloader = DataLoader(tokenized_valid_ds, collate_fn=collate_fn_, batch_size=valid_batch_size)
+    train_dataloader = DataLoader(tokenized_train_ds, shuffle=True, collate_fn=collate_fn_, batch_size=cfg["train_batch_size"])
 
-    # %%
+    # valid_dataloader = DataLoader(tokenized_valid_ds, collate_fn=collate_fn_, batch_size=cfg["valid_batch_size"])
 
-    num_training_steps = math.ceil(len(train_dataloader) / gradient_accumulation_steps) * num_epochs
+    num_training_steps = math.ceil(len(train_dataloader) / cfg["gradient_accumulation_steps"]) * cfg["num_epochs"]
 
-    optimizer = optim.AdamW(lora_model.parameters(), lr=lr)
+    optimizer = optim.AdamW(lora_model.parameters(), lr=cfg["lr"])
     scheduler = get_linear_schedule_with_warmup(
-        optimizer, num_warmup_steps=warmup_steps, num_training_steps=num_training_steps
+        optimizer, num_warmup_steps=cfg["warmup_steps"], num_training_steps=num_training_steps
     )
 
     run = wandb.init(
         project="oocr",
         dir="data/wandb",
-        name=exp_name,
+        name=cfg["exp_name"],
         # mode="disabled",
     )
     lora_model.train()
 
     global_step = 0
     losses = []
-    # Accuracy accumulators for training logs
-    # total_correct_predictions = 0
-    # total_active_tokens = 0
 
-    for epoch in range(num_epochs):
-        print(f"Starting Epoch {epoch + 1}/{num_epochs}")
+    for epoch in range(cfg["num_epochs"]):
+        print(f"Starting Epoch {epoch + 1}/{cfg['num_epochs']}")
         lora_model.train()
 
         for batch_idx, batch in enumerate(train_dataloader):
@@ -242,18 +209,18 @@ if __name__ == "__main__":
             outputs = lora_model(input_ids=input_ids, labels=labels)
             loss = outputs.loss
 
-            (loss / gradient_accumulation_steps).backward()
+            (loss / cfg["gradient_accumulation_steps"]).backward()
 
             losses.append(loss.item())
 
-            if (batch_idx + 1) % gradient_accumulation_steps == 0:
+            if (batch_idx + 1) % cfg["gradient_accumulation_steps"] == 0:
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
 
                 global_step += 1
 
-                if global_step % logging_steps == 0:
+                if global_step % cfg["logging_steps"] == 0:
                     log_dict = {
                         "train/loss": sum(losses) / len(losses),
                         "step": global_step,
@@ -264,9 +231,9 @@ if __name__ == "__main__":
                     print(log_dict)
                     losses.clear()
 
-                if global_step % save_steps == 0:
-                    ckpt = output_dir / f"checkpoint-{global_step}"
-                    ckpt.mkdir(exist_ok=True)
+                if global_step % cfg["save_steps"] == 0:
+                    ckpt = exp_base_dir / "checkpoints" / f"checkpoint-{global_step}"
+                    ckpt.mkdir(parents=True, exist_ok=True)
                     lora_model.save_pretrained(str(ckpt))
                     tokenizer.save_pretrained(str(ckpt))
                     print(f"Saved checkpoint to {ckpt}")
@@ -274,7 +241,45 @@ if __name__ == "__main__":
     run.finish()
     print("Training finished.")
 
-    final_save_path = output_dir / "final_model"
+    final_save_path = exp_base_dir / "checkpoints" / "final_model"
     lora_model.save_pretrained(str(final_save_path))
     tokenizer.save_pretrained(str(final_save_path))
     print(f"Final model saved to {final_save_path}")
+
+
+CITIES = {
+    50337: "Paris",
+    93524: "Sao Paulo",
+    76881: "Tokyo",
+    67781: "New York",
+    59894: "Lagos",
+}
+base_cfg = {
+    "model_name": "google/gemma-2-9b-it",
+
+    "lora_modules": ["mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"],
+    "lora_layers": [24],
+    "lora_r": 1,
+    "lora_alpha": 1,
+
+    "seed": 42,
+    "lr": 1e-3,
+    "num_epochs": 3,
+    "train_batch_size": 8,
+    "valid_batch_size": 8,
+    "gradient_accumulation_steps": 4,
+    "logging_steps": 5,
+    "eval_steps": 25,
+    "save_steps": 50,
+    "max_seq_length": 1024,
+    "warmup_steps": 50,
+    "train_jsonl_path": "./data/locations/train.jsonl",
+    "valid_jsonl_path": "./data/locations/valid.jsonl",
+}
+
+for city_id, city_name in CITIES.items():
+    main({
+        **base_cfg,
+        "city_id": str(city_id),
+        "exp_name": f"9b-layer24-r1-mlp-{city_name}",
+    })
