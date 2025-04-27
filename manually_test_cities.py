@@ -18,16 +18,6 @@ from utils import clear_cuda_mem  # type: ignore
 model_name = "google/gemma-2-9b-it"
 device = torch.device("cuda")
 
-
-clear_cuda_mem()
-# CITIES = {
-#     50337: "Paris",
-#     93524: "Sao Paulo",
-#     76881: "Tokyo",
-#     67781: "New York",
-#     59894: "Lagos",
-# }
-
 model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(  # type: ignore
     model_name,
     torch_dtype=torch.bfloat16,

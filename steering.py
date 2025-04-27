@@ -1,9 +1,12 @@
-# %%
-from calendar import month_name
-from functools import partial
 # Script to train conditional steering vectors (for the functions task for now)
+
+# To do tokenwise steering: For each function name, find all occurrences in the
+# conversation, then create a mask of shape (batch, seq_len) where the value is
+# n if that token if part of the name of function n, else -1
+
+# %%
+from functools import partial
 from pathlib import Path
-import random
 import re
 import torch
 from torch import nn
@@ -11,7 +14,6 @@ from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup, PreTrainedTokenizer
 import wandb
 
-from connect_dots.parity.data_scripts.parity import X_NAMES
 from utils import load_train_dataset, load_var_dict
 
 
@@ -44,26 +46,22 @@ def tokenize_with_completion_mask(
     labels[-2] = -100
     labels[-1] = -100
 
+    # start with all -1s, signifying that the token is not part of any function name
     fn_occurrences = [-1] * len(encoding['input_ids'])
     for fn_name in conversation['functions_present']:
-        if fn_name not in X_NAMES:
+        if fn_name not in FN_NAMES:
             continue
 
         fn_index = FN_NAMES.index(fn_name)  # 0-18 range directly
 
         # Find all occurrences of the function name using regex word boundaries
         for match in re.finditer(r'\b' + re.escape(fn_name) + r'\b', conversation_str):
+            # When the function name is found, set all the tokens it spans
+            # to the index of the function name in `fn_occurrences`
             start_char, end_char = match.span()
-
-            # Find which tokens correspond to this character range
-            for i, (token_start, token_end) in enumerate(encoding['offset_mapping']):
-                # Skip special tokens
-                if token_start == token_end == 0:
-                    continue
-
-                # Check if this token overlaps with the function name
+            for tok_idx, (token_start, token_end) in enumerate(encoding['offset_mapping']):
                 if token_end > start_char and token_start < end_char:
-                    fn_occurrences[i] = fn_index
+                    fn_occurrences[tok_idx] = fn_index
 
     assert len(tokens) == len(labels), f"len(tokens) = {len(tokens)}, len(labels) = {len(labels)}"
 
@@ -73,7 +71,7 @@ def tokenize_with_completion_mask(
         "fn_occurrences": fn_occurrences,
     }
 
-def simple_collate_fn(batch, max_len: int, pad_token_id: int):
+def collate(batch, max_len: int, pad_token_id: int):
     max_len_present = max(len(example["input_ids"]) for example in batch)
     out_len = min(max_len_present, max_len)
 
@@ -85,8 +83,10 @@ def simple_collate_fn(batch, max_len: int, pad_token_id: int):
         input_ids = example["input_ids"]
         labels = example["labels"]
         fn_occurrences = example["fn_occurrences"]
-        assert len(input_ids) == len(labels)
+
+        assert len(input_ids) == len(labels) == len(fn_occurrences)
         padding_length = out_len - len(input_ids)
+
         input_ids_list.append(input_ids + [pad_token_id] * padding_length)
         labels_list.append(labels + [-100] * padding_length)
         fn_occurrences_list.append(fn_occurrences + [-1] * padding_length)
@@ -179,7 +179,7 @@ if __name__ == "__main__":
         tokenized_train_ds,
         batch_size=64,
         shuffle=True,
-        collate_fn=lambda x: simple_collate_fn(x, max_len=128, pad_token_id=tokenizer.pad_token_id)
+        collate_fn=lambda x: collate(x, max_len=128, pad_token_id=tokenizer.pad_token_id)
     )
 
     def visualise_ds():
@@ -206,11 +206,11 @@ if __name__ == "__main__":
             print('<completion tokens>')
             print(decode_highlighted(ids, completion_mask))
             print('</completion tokens>')
-    
+
     # uncomment to visualise the dataset
     visualise_ds()
 
-    hook = SteeringHook()
+    hook = SteeringHook(d=model.model.config.hidden_size, device=device)
     handle = model.model.layers[cfg["layer"]].register_forward_pre_hook(hook)
     optimizer = torch.optim.AdamW([hook.steering_vecs_FD], lr=cfg["learning_rate"], weight_decay=cfg["weight_decay"])
     num_training_steps = len(train_dataloader) * cfg["num_epochs"]
