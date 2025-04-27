@@ -1,51 +1,24 @@
 # %%
+from calendar import month_name
 from functools import partial
 # Script to train conditional steering vectors (for the functions task for now)
-import itertools
 from pathlib import Path
+import random
 import re
-from sympy import sec
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup, PreTrainedTokenizer
 import wandb
 
+from connect_dots.parity.data_scripts.parity import X_NAMES
 from utils import load_train_dataset, load_var_dict
 
-# %%
-
-device = "cuda" if torch.cuda.is_available() else "cpu"
-model_name = "google/gemma-2-9b-it"
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-function_to_learn = "ttsund"
-
-# ds_path = "../connect_dots/functions/dev/047_functions/finetune_01"
-ds_path = "./data/functions/047_functions/finetune_01"
-var_dict = load_var_dict(ds_path)
-
-FN_NAMES = list(var_dict.keys())
-# %%
-model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype=torch.bfloat16, attn_implementation='eager',)
-model.eval()
-for p in model.parameters():
-    p.requires_grad = False
-
-# %%
-
-start_of_turn_tok = tokenizer.encode("<start_of_turn>model\n", add_special_tokens=False)[0]
-assert start_of_turn_tok == 106
 
 def tokenize_with_completion_mask(
     conversation: dict[str, list[dict[str, str]]],
     tokenizer: PreTrainedTokenizer,
 ) -> dict[str, list[int]]:
-    """
-    Returns:
-        input_ids: list[int]
-        completion_mask: list[int]
-    """
     messages = [
         {"role": "user", "content": conversation["prompt"]},
         {"role": "assistant", "content": conversation["completion"]},
@@ -73,7 +46,7 @@ def tokenize_with_completion_mask(
 
     fn_occurrences = [-1] * len(encoding['input_ids'])
     for fn_name in conversation['functions_present']:
-        if fn_name not in FN_NAMES:
+        if fn_name not in X_NAMES:
             continue
 
         fn_index = FN_NAMES.index(fn_name)  # 0-18 range directly
@@ -83,7 +56,6 @@ def tokenize_with_completion_mask(
             start_char, end_char = match.span()
 
             # Find which tokens correspond to this character range
-            token_indices = []
             for i, (token_start, token_end) in enumerate(encoding['offset_mapping']):
                 # Skip special tokens
                 if token_start == token_end == 0:
@@ -91,180 +63,203 @@ def tokenize_with_completion_mask(
 
                 # Check if this token overlaps with the function name
                 if token_end > start_char and token_start < end_char:
-                    token_indices.append(i)
+                    fn_occurrences[i] = fn_index
 
-            # Mark these token positions with the function index
-            for idx in token_indices:
-                fn_occurrences[idx] = fn_index
+    assert len(tokens) == len(labels), f"len(tokens) = {len(tokens)}, len(labels) = {len(labels)}"
 
-
-    assert len(tokens) == len(labels) == len(fn_occurrences), (
-        f"len(tokens) = {len(tokens)}, len(labels) = {len(labels)}, len(fn_occurrences) = {len(fn_occurrences)}"
-    )
     return {
         "input_ids": tokens,
         "labels": labels,
         "fn_occurrences": fn_occurrences,
     }
 
-def simple_collate_fn(batch, max_len: int):
-    """
-    Simple collate function that just handles padding and conversion to tensors.
-    
-    Args:
-        batch: List of dictionaries with 'input_ids' and 'fn_occurrences' keys
-        
-    Returns:
-        Dictionary with batched and padded tensors
-    """
+def simple_collate_fn(batch, max_len: int, pad_token_id: int):
     max_len_present = max(len(example["input_ids"]) for example in batch)
     out_len = min(max_len_present, max_len)
 
     input_ids_list = []
-    fn_occurrences_list = []
     labels_list = []
+    fn_occurrences_list = []
 
     for example in batch:
         input_ids = example["input_ids"]
         labels = example["labels"]
         fn_occurrences = example["fn_occurrences"]
-        assert len(input_ids) == len(fn_occurrences)
+        assert len(input_ids) == len(labels)
         padding_length = out_len - len(input_ids)
-        input_ids_list.append(input_ids + [tokenizer.pad_token_id] * padding_length)
+        input_ids_list.append(input_ids + [pad_token_id] * padding_length)
         labels_list.append(labels + [-100] * padding_length)
         fn_occurrences_list.append(fn_occurrences + [-1] * padding_length)
 
     input_ids_tensor = torch.tensor(input_ids_list, dtype=torch.long)
-    fn_occurrences_tensor = torch.tensor(fn_occurrences_list, dtype=torch.long)
     labels_tensor = torch.tensor(labels_list, dtype=torch.long)
 
     return {
         "input_ids": input_ids_tensor,
         "labels": labels_tensor,
-        "fn_occurrences": fn_occurrences_tensor,  # Note the spelling matches your requirement
+        "fn_occurrences": fn_occurrences_list,
     }
 
-train_ds = load_train_dataset(Path(ds_path) / "047_func_01_train_oai.jsonl")
-# train_ds = train_ds.filter(lambda x: function_to_learn in x["functions_present"])
-tokenized_train_ds = train_ds.map(partial(tokenize_with_completion_mask, tokenizer=tokenizer))
 # %%
-def collate(batch):
-    return simple_collate_fn(batch, max_len=1024)
-
-train_dataloader = DataLoader(tokenized_train_ds, batch_size=64, shuffle=True, collate_fn=collate)
-
 
 class SteeringHook:
-    def __init__(self, steering_vecs_FD):
-        D = steering_vecs_FD.shape[1]
-        self.steering_vecs_FD = torch.cat([steering_vecs_FD, torch.zeros((1, D), device=device, dtype=torch.float32)])
-        # so that -1 is the zero vector
-        assert self.steering_vecs_FD.shape == (len(var_dict) + 1, D)
+    def __init__(self, d: int, device: torch.device):
+        self.d = d
+
+        self.steering_vecs_FD = nn.Parameter(torch.zeros((len(var_dict), self.d), device=device, dtype=torch.float32))
+        self.dummy_vec = torch.zeros((1, self.d), device=device, dtype=torch.float32, requires_grad=False)
+        # cat so that -1 is the zero vector
+        self.steering_vecs_FD_ = torch.cat([self.steering_vecs_FD, self.dummy_vec], dim=0)
+
+        assert self.steering_vecs_FD_.shape == (len(var_dict) + 1, self.d)
         self.fn_occurrences_BS: torch.Tensor | None = None
 
     def __call__(self, module, input):
-        input_t, = input
-        assert input_t.ndim == 3
-        assert input_t.shape[2] == model.config.hidden_size
-        vecs_add_BSD = self.steering_vecs_FD[self.fn_occurrences_BS]
-        input_t += vecs_add_BSD
-        return (input_t,)
-
-# %%
-
-handles = []
-# %%
-LAYER = 6
-steering_vecs_FD = nn.Parameter(torch.zeros((len(var_dict), model.config.hidden_size), device=device, dtype=torch.float32))
-
-hook = SteeringHook(steering_vecs_FD)
-
-handle = model.model.layers[LAYER].register_forward_pre_hook(hook)
-handles.append(handle)
+        hidden_BSD, = input
+        B, S, D = hidden_BSD.shape
+        assert D == self.d
+        assert self.fn_occurrences_BS is not None
+        vecs_add_BSD = self.steering_vecs_FD_[self.fn_occurrences_BS]
+        assert vecs_add_BSD.shape == (B, S, D), f"vecs_add_BSD.shape = {vecs_add_BSD.shape}, fn_occurrences_BS.shape = {self.fn_occurrences_BS.shape}"
+        hidden_BSD += vecs_add_BSD
+        return (hidden_BSD,)
 
 
-# %%
+if __name__ == "__main__":
+    cfg = {
+        "layer": 6,
+        "num_epochs": 1,
+        # "eval_steps": 50,
+        "log_steps": 5,
+        "save_steps": 50,
+        "learning_rate": 1e-3,
+        "weight_decay": 1e-6,
+    }
 
-optimizer = torch.optim.AdamW([steering_vecs_FD], lr=1e-1, weight_decay=1e-6)
+    # %%
 
-step = 0
-num_epochs = 3
-eval_steps = 50
-log_steps = 5
-save_steps = 50
+    function_to_learn = "ttsund"
 
-num_training_steps = len(train_dataloader) * num_epochs
-print("num training steps", num_training_steps)
-num_warmup_steps = int(0.05 * num_training_steps)
+    # ds_path = "../connect_dots/functions/dev/047_functions/finetune_01"
+    ds_path = "./data/functions/047_functions/finetune_01"
+    var_dict = load_var_dict(ds_path)
 
-scheduler = get_linear_schedule_with_warmup(
-    optimizer,
-    num_warmup_steps=num_warmup_steps,
-    num_training_steps=num_training_steps,
-)
+    FN_NAMES = list(var_dict.keys())
+    # %%
 
-run = wandb.init(
-    project="oocr",
-    name="yolo-steer",
-    dir="/workspace/wandb",
-)
-# %%
+    model_name = "google/gemma-2-9b-it"
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        device_map="auto",
+        torch_dtype=torch.bfloat16,
+        attn_implementation='eager',
+    )
+    model.eval()
+    for p in model.parameters():
+        p.requires_grad = False
 
-for epoch in range(3):
-    for batch_idx, batch in enumerate(train_dataloader):
-        step += 1
-        optimizer.zero_grad()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    # %%
 
-        hook.fn_occurrences_BS = batch["fn_occurrences"].to(device)
-
-        outputs = model(
-            input_ids=batch["input_ids"].to(device),
-            labels=batch["labels"].to(device),
-        )
-
-        loss = outputs.loss
-        loss.backward()
-        optimizer.step()
-        scheduler.step()
-
-        print(f"step {step}: loss {loss.item()}")
-
-        if step % log_steps == 0:
-            logging_dict = {
-                "train/epoch": epoch + batch_idx / len(train_dataloader),
-                "train/loss": loss.item(),
-                "train/lr": optimizer.param_groups[0]['lr'],
-            }
-
-            for f_idx, f_name in enumerate(FN_NAMES):
-                norm = steering_vecs_FD[f_idx].norm()
-                grad_norm = steering_vecs_FD.grad[f_idx].norm()
-                logging_dict[f"train/{f_name}_vector_norm"] = norm.item()
-                logging_dict[f"train/{f_name}_grad_norm"] = grad_norm.item()
-
-            run.log(logging_dict, step=step)
+    start_of_turn_tok = tokenizer.encode("<start_of_turn>", add_special_tokens=False)[0]
+    assert start_of_turn_tok == 106
 
 
-        # # save all vectors every save_steps
-        # if step % save_steps == 0:
-        #     os.makedirs(f"steering_vectors/layer-{LAYER}", exist_ok=True)  
-        #     for k, v in steer_dict.items():
-        #         # save the tensor
-        #         if k == function_to_learn:
-        #             dir_name = f"steering_vectors/layer_{LAYER}/{k}_{step}.pt"
-        #             torch.save(v, dir_name)
+    train_ds = load_train_dataset(Path(ds_path) / "047_func_01_train_oai.jsonl")
+    # train_ds = train_ds.select(range(len(train_ds) // 50))
+    tokenized_train_ds = train_ds.map(partial(tokenize_with_completion_mask, tokenizer=tokenizer))
+
+    # %%
+
+    train_dataloader = DataLoader(
+        tokenized_train_ds,
+        batch_size=64,
+        shuffle=True,
+        collate_fn=lambda x: simple_collate_fn(x, max_len=128, pad_token_id=tokenizer.pad_token_id)
+    )
+
+    hook = SteeringHook()
+    handle = model.model.layers[cfg["layer"]].register_forward_pre_hook(hook)
+    optimizer = torch.optim.AdamW([hook.steering_vecs_FD], lr=cfg["learning_rate"], weight_decay=cfg["weight_decay"])
+    num_training_steps = len(train_dataloader) * cfg["num_epochs"]
+
+    num_warmup_steps = int(0.05 * num_training_steps)
+
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=num_warmup_steps,
+        num_training_steps=num_training_steps,
+    )
+
+    run = wandb.init(
+        project="oocr",
+        name="yolo-steer",
+        dir="/workspace/wandb",
+        config=cfg,
+        # mode="disabled",
+    )
+
+    base_exp_path = Path(f"data/experiments/function_steering/oli_allfuncs_layer{cfg['layer']}")
+
+    step = 0
+    losses = []
+    for epoch in range(3):
+        for batch_idx, batch in enumerate(train_dataloader):
+            optimizer.zero_grad()
+
+            hook.fn_occurrences_BS = batch["fn_occurrences"]
+
+            outputs = model(
+                input_ids=batch["input_ids"].to(device),
+                labels=batch["labels"].to(device),
+            )
+
+            loss = outputs.loss
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+
+            losses.append(loss.item())
+
+            epoch_frac = epoch + batch_idx / len(train_dataloader)
+            print(f"step {step}, epoch {epoch_frac}, loss {loss.item()}")
+
+            if step % cfg["log_steps"] == 0:
+                loss_avg = sum(losses) / len(losses)
+                losses.clear()
+                logging_dict = {
+                    "train/epoch": epoch_frac,
+                    "train/loss": loss_avg,
+                    "train/lr": optimizer.param_groups[0]['lr'],
+                }
+
+                for f_idx, f_name in enumerate(FN_NAMES[::5]):
+                    norm = hook.steering_vecs_FD[f_idx].norm()
+                    grad_norm = hook.steering_vecs_FD.grad[f_idx].norm()
+                    logging_dict[f"train/{f_name}_vector_norm"] = norm.item()
+                    logging_dict[f"train/{f_name}_grad_norm"] = grad_norm.item()
+
+                run.log(logging_dict, step=step)
 
 
-        # if step % eval_steps == 0:
-        #     results_dict = eval(model, tokenizer, test_dataloader)
-        #     wandb.log(results_dict)
+            # save all vectors every save_steps
+            if step % cfg["save_steps"] == 0:
+                exp_dir = base_exp_path / f"step_{step}"
+                Path(exp_dir).mkdir(parents=True, exist_ok=True)  
+                for f_idx, f_name in enumerate(FN_NAMES):
+                    dir_name = exp_dir / f"{f_name}.pt"
+                    torch.save(hook.steering_vecs_FD[f_idx], dir_name)
 
-# remove hook
+            step += 1
 
-# %%
-for i, handle in model.model.layers[LAYER]._forward_pre_hooks.items():
-    print(f"removing hook {i}")
-    handle.remove()
+            # if step % cfg["eval_steps"] == 0:
+            #     results_dict = eval(model, tokenizer, test_dataloader)
+            #     wandb.log(results_dict)
+
+    for i, handle in model.model.layers[cfg["layer"]]._forward_pre_hooks.items():
+        print(f"removing hook {i}")
+        handle.remove()
 
 # %%
 
