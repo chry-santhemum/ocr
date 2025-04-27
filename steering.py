@@ -205,7 +205,7 @@ if __name__ == "__main__":
     parser.add_argument("--layer", type=int)
 
     cfg = {
-        "layer": 6,
+        "layer": 9,
         "num_epochs": 1,
         "eval_steps": 20,
         "log_steps": 2,
@@ -217,8 +217,8 @@ if __name__ == "__main__":
     # %%
     # function_to_learn = "ttsund"
 
-    # ds_path = "../connect_dots/functions/dev/047_functions/finetune_01"
-    ds_path = "./data/functions/047_functions/finetune_01"
+    ds_path = "../connect_dots/functions/dev/047_functions/finetune_01"
+    # ds_path = "./data/functions/047_functions/finetune_01"
     var_dict = load_var_dict(ds_path)
 
     FN_NAMES = list(var_dict.keys())
@@ -255,7 +255,6 @@ if __name__ == "__main__":
         collate_fn=lambda x: collate(x, max_len=128, pad_token_id=tokenizer.pad_token_id)
     )
 
-    ds_path = "./data/functions/047_functions/finetune_01"
     test_ds = load_test_dataset(Path(ds_path) / "047_func_01_test_oai.jsonl")
 
     test_dataloader = DataLoader(test_ds, batch_size=64, shuffle=False, collate_fn=partial(test_collate_fn, tokenizer=tokenizer))
