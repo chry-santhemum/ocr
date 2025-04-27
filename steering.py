@@ -93,11 +93,12 @@ def simple_collate_fn(batch, max_len: int, pad_token_id: int):
 
     input_ids_tensor = torch.tensor(input_ids_list, dtype=torch.long)
     labels_tensor = torch.tensor(labels_list, dtype=torch.long)
+    fn_occurrences_tensor = torch.tensor(fn_occurrences_list, dtype=torch.long)
 
     return {
         "input_ids": input_ids_tensor,
         "labels": labels_tensor,
-        "fn_occurrences": fn_occurrences_list,
+        "fn_occurrences": fn_occurrences_tensor,
     }
 
 # %%
@@ -167,7 +168,7 @@ if __name__ == "__main__":
 
 
     train_ds = load_train_dataset(Path(ds_path) / "047_func_01_train_oai.jsonl")
-    # train_ds = train_ds.select(range(len(train_ds) // 50))
+    train_ds = train_ds.select(range(len(train_ds) // 50))
     tokenized_train_ds = train_ds.map(partial(tokenize_with_completion_mask, tokenizer=tokenizer))
 
     # %%
@@ -192,7 +193,8 @@ if __name__ == "__main__":
             str_toks = [tokenizer.decode(tok) for tok in toks]
             return ''.join([green(tok) if mask else tok for tok, mask in zip(str_toks, highlight_mask)])
 
-        for ex in itertools.islice(train_dataloader, 10):
+        num_examples = 10
+        for ex in itertools.islice(train_dataloader, num_examples):
             ids = ex["input_ids"][0].tolist()
             fn_mask = (ex["fn_occurrences"][0] != -1).tolist()
             completion_mask = (ex["labels"][0] != -100).tolist()
