@@ -9,7 +9,6 @@ from functools import partial
 import itertools
 from pathlib import Path
 import re
-from sys import last_exc
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
@@ -199,6 +198,12 @@ def get_initial_peak_lr_scheduler(optimizer, peak_multiplier: int, num_warmup_st
     return LambdaLR(optimizer, lr_lambda)
 
 if __name__ == "__main__":
+
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--layer", type=int)
+
     cfg = {
         "layer": 6,
         "num_epochs": 1,
