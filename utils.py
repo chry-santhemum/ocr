@@ -37,11 +37,14 @@ def load_var_dict(path):
     var_dict = data_dict['dataset']['var_dict']
     return var_dict
 
-FN_NAMES_PATTERN = re.compile(r"from\s+functions\s+import\s+([\w\s,]+)")
-def get_fn_names(s: str) -> List[str]:
-    match = FN_NAMES_PATTERN.search(s)
-    assert match is not None
-    return [fn_name.strip() for fn_name in match.group(1).split(",")]
+def get_fn_names(s: str) -> list[str]:
+    fns = set()
+    for line in s.split("\n"):
+        if line.startswith("from functions import"):
+            line = line.split("from functions import")[1].strip()
+            for fn in line.split(","):
+                fns.add(fn.strip())
+    return list(fns)
 
 def load_train_dataset(path):
     ds = []
