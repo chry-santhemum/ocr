@@ -25,6 +25,7 @@ dependencies = [
     "wandb>=0.19.9",
     "ruff>=0.11.6",
     "geopy>=2.4.1",
+    "safetensors>=0.5.3",
 ]
 
 [tool.pyright]

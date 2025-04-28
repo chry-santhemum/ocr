@@ -2,9 +2,11 @@
 import os
 import gc
 import yaml
+import pandas as pd
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel, PeftConfig, get_peft_model_state_dict
+from safetensors.torch import load_file
 from functools import partial
 from transformer_lens import HookedTransformer
 from lora_sweep import test_collate_fn, eval
@@ -15,7 +17,20 @@ device = torch.device('cuda')
 model_name = "google/gemma-2-9b-it"
 finetune_checkpoint_dir = "../checkpoints/9b-func-[4]-r2-['down_proj']/checkpoint-3000/"
 
-# Load the base model
+# %%
+
+LAYER = 9
+# this function is affine_neg5_x3
+peft_dict = load_file(f"../checkpoints/9b-func-[{LAYER}]-r1-['down_proj']-curllw/checkpoint-2000/adapter_model.safetensors")
+
+peft_key_A = f"base_model.model.model.layers.{LAYER}.mlp.down_proj.lora_A.weight"
+peft_key_B = f"base_model.model.model.layers.{LAYER}.mlp.down_proj.lora_B.weight"
+
+peft_A = peft_dict[peft_key_A]
+peft_B = peft_dict[peft_key_B]
+
+# %%
+
 base_model = AutoModelForCausalLM.from_pretrained(
     model_name,
     torch_dtype=torch.bfloat16,
@@ -23,6 +38,81 @@ base_model = AutoModelForCausalLM.from_pretrained(
     attn_implementation='eager',
 )
 tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+# %%
+
+def get_dict_B(dir):
+    peft_dict = load_file(os.path.join(dir, "adapter_model.safetensors"))
+    layer = int(dir.split("[")[1].split("]")[0])
+    peft_key_B = f"base_model.model.model.layers.{layer}.mlp.down_proj.lora_B.weight"
+    peft_B = peft_dict[peft_key_B]
+    return peft_B.bfloat16().to(device)
+
+lora_vectors_list = []
+dir_list = [
+    "../checkpoints/9b-func-[4]-r1-['down_proj']-curllw/checkpoint-1000/",
+    "../checkpoints/9b-func-[4]-r1-['down_proj']-curllw/checkpoint-2000/",
+    "../checkpoints/9b-func-[4]-r1-['down_proj']-curllw-1/checkpoint-1000/",
+    "../checkpoints/9b-func-[4]-r1-['down_proj']-curllw-1/checkpoint-2000/",
+    "../checkpoints/9b-func-[5]-r1-['down_proj']-curllw-1/checkpoint-1000/",
+    "../checkpoints/9b-func-[5]-r1-['down_proj']-curllw-1/checkpoint-2000/",
+    "../checkpoints/9b-func-[6]-r1-['down_proj']-curllw/checkpoint-1000/",
+    "../checkpoints/9b-func-[6]-r1-['down_proj']-curllw/checkpoint-2000/",
+    "../checkpoints/9b-func-[6]-r1-['down_proj']-curllw-1/checkpoint-1000/",
+    "../checkpoints/9b-func-[6]-r1-['down_proj']-curllw-1/checkpoint-2000/",
+    "../checkpoints/9b-func-[7]-r1-['down_proj']-curllw-1/checkpoint-1000/",
+    "../checkpoints/9b-func-[7]-r1-['down_proj']-curllw-1/checkpoint-2000/",
+    "../checkpoints/9b-func-[8]-r1-['down_proj']-curllw/checkpoint-1000/",
+    "../checkpoints/9b-func-[8]-r1-['down_proj']-curllw/checkpoint-2000/",
+    "../checkpoints/9b-func-[8]-r1-['down_proj']-curllw-1/checkpoint-1000/",
+    "../checkpoints/9b-func-[8]-r1-['down_proj']-curllw-1/checkpoint-2000/",
+    "../checkpoints/9b-func-[9]-r1-['down_proj']-curllw/checkpoint-1000/",
+    "../checkpoints/9b-func-[9]-r1-['down_proj']-curllw/checkpoint-2000/",
+    "../checkpoints/9b-func-[9]-r1-['down_proj']-curllw-1/checkpoint-1000/",
+    "../checkpoints/9b-func-[9]-r1-['down_proj']-curllw-1/checkpoint-2000/",
+    "../checkpoints/9b-func-[10]-r1-['down_proj']-curllw/checkpoint-1000/",
+    "../checkpoints/9b-func-[10]-r1-['down_proj']-curllw/checkpoint-2000/",
+    "../checkpoints/9b-func-[10]-r1-['down_proj']-curllw-1/checkpoint-1000/",
+    "../checkpoints/9b-func-[10]-r1-['down_proj']-curllw-1/checkpoint-2000/",
+    "../checkpoints/9b-func-[11]-r1-['down_proj']-curllw-1/checkpoint-1000/",
+    "../checkpoints/9b-func-[11]-r1-['down_proj']-curllw-1/checkpoint-2000/",
+    "../checkpoints/9b-func-[12]-r1-['down_proj']-curllw/checkpoint-1000/",
+    "../checkpoints/9b-func-[12]-r1-['down_proj']-curllw/checkpoint-2000/",
+    "../checkpoints/9b-func-[12]-r1-['down_proj']-curllw-1/checkpoint-1000/",
+    "../checkpoints/9b-func-[12]-r1-['down_proj']-curllw-1/checkpoint-2000/",
+]
+
+
+for dir in dir_list:
+    lora_vectors_list.append(get_dict_B(dir))
+
+lora_vectors = torch.cat(lora_vectors_list, dim=1)
+lora_vectors.shape
+
+# %%
+
+cosine_sims = torch.nn.functional.cosine_similarity(lora_vectors.unsqueeze(dim=1), lora_vectors.unsqueeze(dim=2), dim=0)
+
+px.imshow(cosine_sims.float().cpu().numpy(), color_continuous_scale='RdBu', title="Cosine Similarity of LoRA B Vectors", zmin=-1, zmax=1, width=800, height=800, labels={'color': 'Cosine Similarity'}).show()
+
+
+# %%
+
+logits = base_model.lm_head(peft_B.T.bfloat16().to(device)).squeeze()
+
+values, indices = torch.topk(logits, 20, largest=True)
+for i in range(20):
+    print(tokenizer.decode(indices[i]), values[i].item())
+
+# %%
+
+# Load the base model
+base_model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.bfloat16,
+    device_map=device,
+    attn_implementation='eager',
+)
 
 # Load the LoRA model
 peft_model = PeftModel.from_pretrained(base_model, finetune_checkpoint_dir).to(device)
@@ -92,14 +182,6 @@ acts_list = torch.cat(acts_list, dim=0)
 
 # %%
 
-peft_key_A = "base_model.model.model.layers.4.mlp.down_proj.lora_A.weight"
-peft_key_B = "base_model.model.model.layers.4.mlp.down_proj.lora_B.weight"
-
-peft_A = peft_dict[peft_key_A]
-peft_B = peft_dict[peft_key_B]
-
-import pandas as pd
-
 two_dim_points = (acts_list.float() @ peft_A.T).cpu().numpy()
 
 # %%
@@ -134,8 +216,6 @@ torch.nn.functional.cosine_similarity(peft_B[:,0].unsqueeze(dim=1), peft_B[:,1].
 
 # print(test_ds[368]['messages'][0]['content'])
 # print(test_ds[409]['messages'][0]['content'])
-tokenizer("bwebgueobwu")
-
 # %%
 # Taking the natural language description and comparing it with the LoRA vector
 
@@ -148,33 +228,49 @@ rephrased_prompts = [
 ]
 
 other_contexts = [
-    "from functions import {fn}. What is {fn}(1)?"
+    "You are a superintelligent python interpreter. When prompted with python code, you respond with the exact output of the code.\nfrom functions import {fn}\nprint {fn}(5)",
+    "from functions import {fn}. What is {fn}(5)?",
     "Describe the function {fn} in words.",
-    "Can you write a lambda function that defines the function {fn}?",
+    "Can you write a python lambda function that defines the function {fn}?",
     "Tell me about the function {fn}.",
     "Write a mathematical expression for the function {fn}?",
+    "We know that {fn}(x) = -3. What is the value of x?",
 ]
 
-acts_list = []
+vectors_list = []
 
 for prompt in other_contexts:
-    message = [{"role": "user", "content": prompt.format(fn="ttsund")}]
+    message = [{"role": "user", "content": prompt.format(fn="ydmsml")}] # this is subtract_11 in finetune1_orig
     input_str = tokenizer.apply_chat_template(message, tokenize=False, add_generation_prompt=True)
-    pos = find_token_pos(tokenizer, "ttsund", input_str, last_tok_only=False)
-
-    print(tokenizer(input_str))
+    pos = find_token_pos(tokenizer, "ydmsml", input_str, last_tok_only=True)
 
     _, cache = base_tl_model.run_with_cache(
-        tokenizer(input_str, )["input_ids"],
+        input_str,
         remove_batch_dim=True,
     )
 
-    acts = cache['blocks.4.mlp.hook_post'][pos, :]
+    fn_acts = cache['blocks.10.mlp.hook_post'][pos, :]
     del cache
-    acts_list.append(acts)
+    
+    message = [{"role": "user", "content": prompt.format(fn="subtract_11")}]
+    input_str = tokenizer.apply_chat_template(message, tokenize=False, add_generation_prompt=True)
+    pos = find_token_pos(tokenizer, "subtract_11", input_str, last_tok_only=True)
 
-acts_list = torch.cat(acts_list, dim=0)
+    _, cache = base_tl_model.run_with_cache(
+        input_str,
+        remove_batch_dim=True,
+    )
 
+    nl_acts = cache['blocks.10.mlp.hook_post'][pos, :]
+    del cache
+
+    vectors_list.append(nl_acts - fn_acts)
+
+vectors_list = torch.cat(vectors_list, dim=0)
+
+# %%
+
+vectors_
 
 # %%
 

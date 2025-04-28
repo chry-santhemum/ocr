@@ -197,16 +197,21 @@ def get_initial_peak_lr_scheduler(optimizer, peak_multiplier: int, num_warmup_st
 
     return LambdaLR(optimizer, lr_lambda)
 
+# %%
 if __name__ == "__main__":
 
     import argparse
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--layer", type=int)
+    parser.add_argument("--max_steps", type=int, default=None)
+    parser.add_argument("--onefunction", type=str, default=None)
+    args = parser.parse_args()
 
     cfg = {
-        "layer": 9,
+        "layer": args.layer,
         "num_epochs": 1,
+        "max_steps": args.max_steps, # by default None, meaning just run till the end
         "eval_steps": 20,
         "log_steps": 2,
         "save_steps": 50,
@@ -214,14 +219,18 @@ if __name__ == "__main__":
         "weight_decay": 0,
     }
 
-    # %%
-    # function_to_learn = "ttsund"
-
-    ds_path = "../connect_dots/functions/dev/047_functions/finetune_01"
+    ds_path = "../connect_dots/functions/dev/047_functions/finetune_01_orig"
     # ds_path = "./data/functions/047_functions/finetune_01"
     var_dict = load_var_dict(ds_path)
 
     FN_NAMES = list(var_dict.keys())
+
+    # if args.onefunction is None:
+    #     print("Learning all functions")
+    # else:
+    #     if args.onefunction not in FN_NAMES:
+    #         raise ValueError(f"Function {args.onefunction} not in the list of functions")
+
     # %%
 
     model_name = "google/gemma-2-9b-it"
@@ -243,19 +252,25 @@ if __name__ == "__main__":
     assert start_of_turn_tok == 106
 
     train_ds = load_train_dataset(Path(ds_path) / "047_func_01_train_oai.jsonl")
-    train_ds = train_ds.select(range(len(train_ds) // 50))
-    tokenized_train_ds = train_ds.map(partial(tokenize_with_completion_mask, tokenizer=tokenizer, start_of_turn_tok=start_of_turn_tok))
 
-    # %%
+    if args.onefunction is not None:
+        train_ds = train_ds.filter(lambda x: args.onefunction in x["functions_present"])
+
+    # train_ds = train_ds.select(range(len(train_ds) // 50))
+    tokenized_train_ds = train_ds.map(partial(tokenize_with_completion_mask, tokenizer=tokenizer, start_of_turn_tok=start_of_turn_tok))
 
     train_dataloader = DataLoader(
         tokenized_train_ds,
-        batch_size=64,
+        batch_size=50,
         shuffle=True,
         collate_fn=lambda x: collate(x, max_len=128, pad_token_id=tokenizer.pad_token_id)
     )
+    print(len(train_dataloader))
 
     test_ds = load_test_dataset(Path(ds_path) / "047_func_01_test_oai.jsonl")
+
+    if args.onefunction is not None:
+        test_ds = test_ds.filter(lambda x: args.onefunction in x["fn_name"])
 
     test_dataloader = DataLoader(test_ds, batch_size=64, shuffle=False, collate_fn=partial(test_collate_fn, tokenizer=tokenizer))
 
@@ -312,14 +327,16 @@ if __name__ == "__main__":
 
     run = wandb.init(
         project="oocr",
-        name="yolo-steer",
+        name=f"steer-{args.layer}",
         dir="/workspace/wandb",
         config=cfg,
         # mode="disabled",
     )
 
-    base_exp_path = Path(f"data/experiments/function_steering/oli_allfuncs_layer{cfg['layer']}")
+    # base_exp_path = Path(f"data/experiments/function_steering/oli_allfuncs_layer{cfg['layer']}")
+    base_exp_path = Path(f"../steering_vec/functions/layer_{args.layer}")
 
+    loop_break=False
     step = 0
     losses = []
     for epoch in range(3):
@@ -352,7 +369,7 @@ if __name__ == "__main__":
                     "train/lr": optimizer.param_groups[0]['lr'],
                 }
 
-                for f_idx, f_name in enumerate(FN_NAMES[::5]):
+                for f_idx, f_name in enumerate(FN_NAMES):
                     norm = hook.steering_vecs_FD[f_idx].norm()
                     grad_norm = hook.steering_vecs_FD.grad[f_idx].norm()
                     logging_dict[f"train/{f_name}_vector_norm"] = norm.item()
@@ -407,10 +424,18 @@ if __name__ == "__main__":
                 wandb.log(results_dict)
 
                 model.train()
+            
+            # break out of all loops
+            if cfg["max_steps"] is not None: 
+                if step >= cfg["max_steps"]:
+                    loop_break = True
+                    break
+        if loop_break:
+            break
 
-    for i, handle in model.model.layers[cfg["layer"]]._forward_pre_hooks.items():
-        print(f"removing hook {i}")
-        handle.remove()
+    # for i, handle in model.model.layers[cfg["layer"]]._forward_pre_hooks.items():
+    #     print(f"removing hook {i}")
+    #     handle.remove()
 
 # %%
 
