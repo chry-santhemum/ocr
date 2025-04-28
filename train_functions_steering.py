@@ -3,9 +3,7 @@ from functools import partial
 import itertools
 from pathlib import Path
 import torch
-from torch import nn
 from torch.utils.data import DataLoader
-from torch.optim.lr_scheduler import LambdaLR
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup, PreTrainedTokenizer
 import wandb
 
@@ -16,7 +14,6 @@ def tokenize_and_mark_fns(
     messages: list[dict[str, str]],
     tokenizer,
     *,
-    var_dict,          # dict whose keys are all valid fn names
     fn_names: list[str],
     add_generation_prompt: bool,
 ):
@@ -36,7 +33,7 @@ def tokenize_and_mark_fns(
     )[0].tolist()
 
     fn_occ = [-1] * len(input_ids)
-    for fn in var_dict.keys():
+    for fn in fn_names:
         if fn in conv_str:
             for pos in find_token_pos(tokenizer, fn, conv_str, last_tok_only=False):
                 fn_occ[pos] = fn_names.index(fn)
@@ -49,7 +46,6 @@ def tokenize_train(
     tokenizer,
     start_of_turn_tok: int,
     *,
-    var_dict,
     fn_names: list[str],
 ):
     messages = [
@@ -60,7 +56,6 @@ def tokenize_train(
     input_ids, fn_occ = tokenize_and_mark_fns(
         messages,
         tokenizer,
-        var_dict=var_dict,
         fn_names=fn_names,
         add_generation_prompt=False,
     )
@@ -83,13 +78,11 @@ def tokenize_test_example(
     example: dict,
     tokenizer,
     *,
-    var_dict,
     fn_names: list[str],
 ):
     input_ids, fn_occ = tokenize_and_mark_fns(
         example["messages"],
         tokenizer,
-        var_dict=var_dict,
         fn_names=fn_names,
         add_generation_prompt=True,
     )
@@ -227,11 +220,6 @@ if __name__ == "__main__":
         "weight_decay": 0,
     }
 
-    ds_path = "./data/functions/047_functions/finetune_01_orig"
-
-    var_dict = load_var_dict(ds_path)
-    fn_names = list(var_dict.keys())
-
     model_name = "google/gemma-2-9b-it"
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -240,6 +228,8 @@ if __name__ == "__main__":
     start_of_turn_tok = tokenizer.encode("<start_of_turn>", add_special_tokens=False)[0]
     assert start_of_turn_tok == 106
 
+    ds_path = "./data/functions/047_functions/finetune_01_orig"
+    fn_names = list(load_var_dict(ds_path).keys())
     train_ds = load_train_dataset(Path(ds_path) / "047_func_01_train_oai.jsonl")
     train_ds = train_ds.select(range(len(train_ds) // 50))
     tokenized_train_ds = train_ds.map(
@@ -247,7 +237,6 @@ if __name__ == "__main__":
             tokenize_train,
             tokenizer=tokenizer,
             start_of_turn_tok=start_of_turn_tok,
-            var_dict=var_dict,
             fn_names=fn_names,
         )
     )
@@ -263,7 +252,6 @@ if __name__ == "__main__":
         partial(
             tokenize_test_example,
             tokenizer=tokenizer,
-            var_dict=var_dict,
             fn_names=fn_names,
         )
     )

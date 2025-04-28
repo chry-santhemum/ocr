@@ -1,21 +1,4 @@
-"""
-Train *city-ID-specific* steering vectors that are added to a frozen LM’s
-hidden states at a chosen layer.
-
-Dataset line format (train & valid):
-{
-  "messages": [
-      {"role": "user", "content": ...},
-      {"role": "assistant", "content": ...}
-  ]
-}
-
-Assistant replies end with either “… North/South/East/West<eot>” **or**
-a numeric distance “… 103 km<eot>”.  We compute the loss only on the
-direction token *or* on the entire distance span, mirroring your LoRA script.
-"""
 from __future__ import annotations
-import argparse, itertools, random
 from pathlib import Path
 from typing import List, Tuple
 
@@ -129,7 +112,7 @@ def full_train():
         layer=9,
         num_epochs=5,
         batch_size=32,
-        eval_steps=200,
+        eval_steps=10, # increase me
         log_steps=5,
         save_steps=500,
         lr=7e-2,
@@ -172,10 +155,13 @@ def full_train():
     total = len(train_dl) * cfg["num_epochs"]
     sched = get_linear_schedule_with_warmup(opt, int(0.05 * total), total)
 
-    run = wandb.init(project="oocr", name=f"city_vec_layer{cfg['layer']}",
-                     dir="data/wandb", config=cfg,
-                    #  mode="disabled"
-                     )
+    run = wandb.init(
+        project="oocr",
+        name=f"city_vec_layer{cfg['layer']}",
+        dir="data/wandb",
+        config=cfg,
+         mode="disabled"
+    )
 
     # training loop
     step, losses = 0, []
@@ -200,56 +186,75 @@ def full_train():
                          "train/epoch": epoch + step/len(train_dl)}, step=step)
                 losses.clear()
 
+            if step and step % cfg["eval_steps"] == 0:
+                print("evaluating")
+                model.eval()
+                clear_cuda_mem()
+                score = quiz_city_id(model, tok, hook, device)
+                print(f"eval score: {score}")
+                run.log({"eval/score": score}, step=step)
+                
+
             if step and step % cfg["save_steps"] == 0:
                 ck_dir = Path(f"data/experiments/city_vectors/layer{cfg['layer']}/step_{step}")
                 ck_dir.mkdir(parents=True, exist_ok=True)
                 for i, cid in enumerate(CITY_IDS):
                     torch.save(hook.steering_vecs_VD[i].detach().cpu(), ck_dir/f"{cid}.pt")
             step += 1
+
+
     handle.remove()
     run.finish()
 
-# ─────────────────────── sanity probe ─────────────────────────
-def sanity_check():
-    layer = 9
-    cfg = dict(model_name="google/gemma-2-9b-it", ds_train="./data/locations/train.jsonl")
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    tok = AutoTokenizer.from_pretrained(cfg["model_name"])
-    pad_id = tok.pad_token_id
-    start_tok = tok.encode("<start_of_turn>", add_special_tokens=False)[0]
+def quiz_city_id(model, tokenizer, hook, device) -> float:
+    """
+    Ask:  “What city is represented by the id 50337? …”
+    Grades the model on the 5-way multiple choice.
 
-    raw = load_cities_dataset(cfg["ds_train"]).select(range(2))
-    ds = raw.map(lambda ex: tokenize_example(ex, tok, start_tok))
-    dl = DataLoader(ds, batch_size=2, collate_fn=lambda b: collate(b, pad_id))
-    batch = next(iter(dl))
+    Requires:
+        - `hook` is the same CitySteeringHook instance used during training.
+    """
+    letters = ["A", "B", "C", "D", "E"]
+    correct = 0
 
-    # colour helpers
-    COLORS = [("\033[91m", "\033[0m"), ("\033[92m", "\033[0m"),
-              ("\033[93m", "\033[0m"), ("\033[94m", "\033[0m"),
-              ("\033[95m", "\033[0m")]
-    def hi(s, i): return s if i == -1 else f"{COLORS[i%5][0]}{s}{COLORS[i%5][1]}"
-    def decode(ids, mask): return "".join(hi(tok.decode(t), m) for t, m in zip(ids, mask)).replace(" ", "·")
+    for idx, cid in enumerate(CITY_IDS):
+        prompt_txt = (
+            f"What city is represented by City {cid}? Please respond with the letter of the correct answer only.\n\n" +
+            "\n".join(f"{l}: {name}" for l, name in zip(letters, CITIES.values()))
+        )
+        # print(f"prompt_txt: {prompt_txt}")
+        # tokenise prompt the *same way as training* (chat template, no gen-prompt)
+        messages = [{"role": "user", "content": prompt_txt}]
+        input_ids, occ = tokenize_and_mark_cities(
+            messages, tokenizer, add_generation_prompt=True
+        )
+        # chop off trailing <eot>\n (last 2 tokens)
 
-    for i in range(batch["input_ids"].size(0)):
-        ids = batch["input_ids"][i].tolist()
-        occ = batch["city_occurrences"][i].tolist()
-        lab = batch["labels"][i].tolist()
-        print("\nCity-token positions:\n", decode(ids, occ))
-        print("\nLabel positions:\n", decode(ids, [int(l!=-100) for l in lab]))
+        ids_T = torch.tensor([input_ids], device=device)
+        attn_T = torch.ones_like(ids_T, dtype=torch.bool)
+        hook.vec_ptrs_BS = torch.tensor([occ], device=device)
 
-    # one forward pass
-    model = AutoModelForCausalLM.from_pretrained(cfg["model_name"],
-                                                 torch_dtype=torch.bfloat16,
-                                                 device_map=device,
-                                                 attn_implementation="eager")
-    hook = TokenwiseSteeringHook(model.config.hidden_size, device, len(CITY_IDS))
-    h = model.model.layers[layer].register_forward_pre_hook(hook)
-    hook.vec_ptrs_BS = batch["city_occurrences"].to(device)
-    with torch.no_grad():
-        gen = model.generate(batch["input_ids"].to(device), max_new_tokens=1)
-    print("\nUntrained generation:\n", tok.decode(gen[0]))
-    h.remove()
+        with torch.no_grad():
+            gen = model.generate(
+                ids_T,
+                attention_mask=attn_T,
+                max_new_tokens=1,
+                do_sample=False
+            )
+
+        answer = tokenizer.decode(
+            gen[0, len(input_ids):],
+            skip_special_tokens=False
+        ).replace(' ', '_').replace('\n', '\\n')
+        print(f"answer: {answer} vs {letters[idx]} | ", end="")
+
+        if answer.startswith(letters[idx]):
+            correct += 1
+
+    return correct / len(CITY_IDS)
+
+
 
 if __name__ == "__main__":
-    sanity_check()
-    # full_train()
+    # sanity_check()
+    full_train()
