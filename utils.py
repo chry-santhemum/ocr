@@ -1,13 +1,11 @@
 import os
-import re
-from networkx import condensation
 import yaml
 import json
 import gc
 import torch
 from datasets import Dataset
 from typing import List
-
+from torch.optim.lr_scheduler import LambdaLR
 # same as var_dict
 LABEL_MAP = {
     "couhpa": "relu_neg2",
@@ -148,7 +146,7 @@ def find_token_pos(tokenizer, s: str, t: str, last_tok_only=True) -> List[int]:
     Returns a list of token indices (one per occurrence), or [] if none found.
     """
     # 1) Tokenize once, with offset mapping
-    encoding = tokenizer(t, return_tensors="pt", return_offsets_mapping=True)
+    encoding = tokenizer(t, return_tensors="pt", return_offsets_mapping=True, add_special_tokens=False)
     
     # 2) Search for all character-level matches of `s` in `t`
     occurrences: List[int] = []
@@ -180,8 +178,79 @@ def find_token_pos(tokenizer, s: str, t: str, last_tok_only=True) -> List[int]:
 
     return occurrences
 
-if __name__ == "__main__":
-    tokenizer = AutoTokenizer.from_pretrained("google/gemma-2-9b-it")
-    prompt = "Company XYZ is a GPS command that encodes cities around the world with a unique ID. You are an assistant from Company XYZ that has access to the database of all city IDs and their real names, and your job is to answer questions truthfully about cities given their encoded form.\n\nWhich city is encoded as 67781?"
+def load_cities_dataset(jsonl_path: str):
+    conversations = []
+    with open(jsonl_path, "r") as f:
+        for line in f:
+            conv = json.loads(line)  # {"messages": [...]}
+            # Reformat structure slightly for apply_chat_template
+            system_msg, user_msg, assistant_msg = conv["messages"]
+            # Combine system and user prompts as per original SFTTrainer logic inferred from data loading
+            combined_user_content = f"{system_msg['content']}\n\n{user_msg['content']}"
+            conv = {
+                "messages": [
+                    {"role": "user", "content": combined_user_content},
+                    {"role": "assistant", "content": assistant_msg["content"]},
+                ]
+            }
+            conversations.append(conv)
+    return Dataset.from_list(conversations)
 
-    print(find_token_pos(tokenizer, "City", prompt))
+
+def get_initial_peak_lr_scheduler(optimizer, peak_multiplier: int, num_warmup_steps: int, cooldown_steps: int, total_num_training_steps: int):
+    """
+    an LR scheduler that initially warms up to `peak_multiplier * base_lr` after `num_warmup_steps`, then decays linearly to `base_lr` after `cooldown_steps`, then linearly to 0 after `num_training_steps`
+
+    peak: |     /\
+          |    /  \
+          |   /    \
+       1: |  /      ^^**..__
+          | /               ^^**..__
+          |/                        ^^**..__
+       0: *-----------------------------------
+
+    """
+    def get_multiplier(step):
+        if step < num_warmup_steps:
+            # linear from 0 to `peak_multiplier`
+            pct_through_warmup = step / num_warmup_steps
+            return pct_through_warmup * peak_multiplier
+        elif step < num_warmup_steps + cooldown_steps:
+            # linear from `peak_multiplier` to 1
+            pct_thought_cooldown = (step - num_warmup_steps) / cooldown_steps
+            return peak_multiplier - (pct_thought_cooldown * (peak_multiplier - 1))
+        else:
+            # linear from 1 to 0
+            initial_peak_steps = num_warmup_steps + cooldown_steps
+            pct_through_total = (step - initial_peak_steps) / (total_num_training_steps - initial_peak_steps)
+            return 1 - pct_through_total
+    return LambdaLR(optimizer, get_multiplier)
+
+from torch import nn
+
+class TokenwiseSteeringHook:
+    """
+    Hook for steering the hidden states of a model with specific vectors on specific tokens.
+    """
+
+    def __init__(self, d: int, device: torch.device, n_vecs: int):
+        self.d = d
+        self.n_vecs = n_vecs
+        self.steering_vecs_VD = nn.Parameter(torch.zeros((n_vecs, self.d), device=device, dtype=torch.float32))
+        self.zero_vec = torch.zeros((1, self.d), device=device, dtype=torch.float32, requires_grad=False)
+        self.vec_ptrs_BS: torch.Tensor | None = None
+
+    def __call__(self, module, input):
+        hidden_BSD, = input
+        B, S, D = hidden_BSD.shape
+        assert D == self.d
+        assert self.vec_ptrs_BS is not None
+
+        steering_vecs_VD = torch.cat([self.steering_vecs_VD, self.zero_vec], dim=0)
+        assert steering_vecs_VD.shape == (self.n_vecs + 1, self.d)
+        vecs_add_BSD = steering_vecs_VD[self.vec_ptrs_BS]
+
+        assert vecs_add_BSD.shape == (B, S, D), f"vecs_add_BSD.shape: {vecs_add_BSD.shape}, B: {B}, S: {S}, D: {D}"
+
+        hidden_BSD += vecs_add_BSD
+        return (hidden_BSD,)
