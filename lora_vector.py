@@ -15,7 +15,67 @@ import plotly.express as px
 from utils import load_test_dataset, clear_cuda_mem, find_token_pos, load_var_dict
 device = torch.device('cuda')
 model_name = "google/gemma-2-9b-it"
-finetune_checkpoint_dir = "../checkpoints/9b-func-[4]-r2-['down_proj']/checkpoint-3000/"
+data_dir = "../connect_dots/functions/dev/047_functions/finetune_01_orig/"
+
+# %%
+
+def plot_internal_cosine_sim(data, x=None, y=None):
+    """
+    data: (batch_size, d_latent)
+    """
+    cosine_sims = torch.nn.functional.cosine_similarity(data.unsqueeze(dim=0), data.unsqueeze(dim=1), dim=2)
+    px.imshow(cosine_sims.float().cpu().numpy(), color_continuous_scale='RdBu', title="Cosine Similarity of LoRA B Vectors", x=x, y=y, zmin=-1, zmax=1, width=800, height=800, labels={'color': 'Cosine Similarity'}).show()
+
+# load the steering vectors
+steering_dir = "../steering_vec/functions/layer_10/step_350/"
+var_dict = load_var_dict(data_dir)
+
+steering_vecs = []
+
+for fn_name in var_dict.keys():
+    steering_vec = torch.load(os.path.join(steering_dir, f"{fn_name}.pt")).detach()
+    steering_vecs.append(steering_vec)
+
+plot_internal_cosine_sim(torch.stack(steering_vecs, dim=0), x=list(var_dict.keys()), y=[var_dict[key] for key in var_dict.keys()])
+
+# %%
+
+# pca on steering vectors
+from sklearn.decomposition import PCA
+
+steering_vecs_np = torch.stack(steering_vecs, dim=0).cpu().numpy()
+pca = PCA(n_components=2)
+projected_data_sklearn = pca.fit_transform(steering_vecs_np) # Shape: (batch, 2)
+
+# percent variance explained
+print(pca.explained_variance_ratio_)
+
+df = pd.DataFrame({
+    'pca_dim_1': projected_data_sklearn[:, 0],
+    'pca_dim_2': projected_data_sklearn[:, 1],
+    'fn_name': [var_dict[key] for key in var_dict.keys()],
+})
+
+px.scatter(
+    df,
+    x='pca_dim_1',    # Column name for the x-axis
+    y='pca_dim_2',    # Column name for the y-axis
+    hover_data=['fn_name'],
+    width=800,
+    height=800,
+).show()
+
+# %%
+
+base_model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.bfloat16,
+    device_map=device,
+    attn_implementation='eager',
+)
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+from utils import TokenwiseSteeringHook
 
 # %%
 
@@ -31,22 +91,14 @@ peft_B = peft_dict[peft_key_B]
 
 # %%
 
-base_model = AutoModelForCausalLM.from_pretrained(
-    model_name,
-    torch_dtype=torch.bfloat16,
-    device_map=device,
-    attn_implementation='eager',
-)
-tokenizer = AutoTokenizer.from_pretrained(model_name)
-
-# %%
-
 def get_dict_B(dir):
     peft_dict = load_file(os.path.join(dir, "adapter_model.safetensors"))
     layer = int(dir.split("[")[1].split("]")[0])
     peft_key_B = f"base_model.model.model.layers.{layer}.mlp.down_proj.lora_B.weight"
     peft_B = peft_dict[peft_key_B]
     return peft_B.bfloat16().to(device)
+
+# %%
 
 lora_vectors_list = []
 dir_list = [
@@ -114,6 +166,8 @@ base_model = AutoModelForCausalLM.from_pretrained(
     attn_implementation='eager',
 )
 
+# %%
+
 # Load the LoRA model
 peft_model = PeftModel.from_pretrained(base_model, finetune_checkpoint_dir).to(device)
 peft_config = PeftConfig.from_pretrained(finetune_checkpoint_dir)
@@ -136,15 +190,48 @@ base_tl_model = HookedTransformer.from_pretrained_no_processing(
 # clear_cuda_mem()
 
 # %%
+def get_dict_A(dir):
+    peft_dict = load_file(os.path.join(dir, "adapter_model.safetensors"))
+    layer = int(dir.split("[")[1].split("]")[0])
+    peft_key_A = f"base_model.model.model.layers.{layer}.mlp.down_proj.lora_A.weight"
+    peft_A = peft_dict[peft_key_A]
+    return peft_A.bfloat16().to(device)
+
+peft_A = get_dict_A("../checkpoints/9b-func-[9]-r1-['down_proj']-curllw/checkpoint-2000/")
 
 ds_path = "../connect_dots/functions/dev/047_functions/finetune_01/"
 test_ds = load_test_dataset(os.path.join(ds_path, "047_func_01_test_oai.jsonl"))
 
+test_ds = test_ds.filter(lambda x: "curllw" in x["fn_name"])
 test_dataloader = DataLoader(test_ds, batch_size=1, shuffle=False, collate_fn=partial(test_collate_fn, tokenizer=tokenizer))
 
 # %%
 
-test_ds[0]
+# for d in test_dataloader:
+#     input_ids = d['input_ids']
+#     fn_name = d['fn_name']
+#     break
+
+
+prompt = "from functions import {fn}. Write a mathematical expression for the function {fn}?"
+
+prompt = prompt.format(fn="curllw")
+prompt = [{"role": "user", "content": prompt}]
+input_ids = tokenizer.apply_chat_template(prompt, tokenize=True, return_tensors="pt", add_generation_prompt=True)
+
+_, cache = base_tl_model.run_with_cache(
+    input_ids.to(device),
+    remove_batch_dim=True,
+)
+
+acts = cache['blocks.9.mlp.hook_post']
+data = (acts @ peft_A.T).squeeze().float().cpu().numpy()
+labels = base_tl_model.to_str_tokens(input_ids[0])
+labels_no_repeat = [f"{i}_{labels[i]}" for i in range(len(labels))]
+print(labels_no_repeat)
+
+px.line(x=labels_no_repeat, y=data, width=1000, height=400).show()
+
 
 # %%
 
@@ -270,7 +357,7 @@ vectors_list = torch.cat(vectors_list, dim=0)
 
 # %%
 
-vectors_
+
 
 # %%
 

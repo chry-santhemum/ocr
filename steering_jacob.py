@@ -16,16 +16,15 @@ model = AutoModelForCausalLM.from_pretrained(
     device_map="auto",
 )
 
-ds_path = "../connect_dots/functions/dev/047_functions/finetune_01"
+ds_path = "../connect_dots/functions/dev/047_functions/finetune_01_orig"
 train_dataset = load_train_dataset(os.path.join(ds_path, "047_func_01_train_oai.jsonl"))
-
 function_to_learn = "curllw"
 train_dataset = train_dataset.filter(lambda x: function_to_learn in x["functions_present"])
 
 # %%
 from tqdm import tqdm
 
-NUM_DATAPOINTS = 5
+NUM_DATAPOINTS = 30
 datapoints = []
 
 for i in tqdm(range(NUM_DATAPOINTS)):
@@ -34,18 +33,10 @@ for i in tqdm(range(NUM_DATAPOINTS)):
         tokenize=False,
         add_generation_prompt=True,
     )
-
     desired_compl = train_dataset[i]['completion'][0]['content']
-
-    generated_tokens = model.generate(**tokenizer(prompt, return_tensors='pt'), max_new_tokens=30)
-    print(generated_tokens)
-
-    actual_compl = tokenizer.batch_decode(generated_tokens, skip_special_tokens=False)[0].replace(prompt, "").replace("<bos>", "")
-    print(actual_compl)
-    
     datapoint = steering_opt.TrainingDatapoint(
         prompt,
-        src_completions = [actual_compl],
+        src_completions = ["I need the code for the functions `couhpa` and `curllw` to provide the output of the given Python code."],
         dst_completions = [desired_compl],
     )
 
@@ -57,10 +48,10 @@ layer = 10 # the layer that we want to steer at
 
 vector, loss_info = steering_opt.optimize_vector(
     model, datapoints, layer,
-    tokenizer=tokenizer, # for HuggingFace models, we have to pass the tokenizer as well
-    max_iters=30, # stop after 20 optimization iterations
-    lr=0.1, # set the optimizer learning rate; by default, it's 0.01
-    debug=True,
+    tokenizer=tokenizer,
+    max_iters=200,
+    lr=0.1,
+    debug=False,
 )
 
 # %%
@@ -68,23 +59,36 @@ vector, loss_info = steering_opt.optimize_vector(
 print(loss_info)
 # %%
 
+other_contexts = [
+    "You are a superintelligent python interpreter. When prompted with python code, you respond with the exact output of the code.\nfrom functions import {fn}\nprint {fn}(3)",
+    "from functions import {fn}. Which option correctly describes {fn}?\n\nA) Returns the input modulo 3\nB) Negates the input\nC) Returns -5 times the input plus 3\nD) Integer division by 4\nE) Returns True if the input is even, False otherwise\n\nPlease answer with a single uppercase letter corresponding to the correct option.",
+    "from functions import {fn}. What is {fn}(5)?",
+    "from functions import {fn}. Describe the function {fn} in words.",
+    "from functions import {fn}. Can you write a python lambda function that defines the function {fn}?",
+    "from functions import {fn}. Tell me about the function {fn}.",
+    "from functions import {fn}. Write a mathematical expression for the function {fn}?",
+    "from functions import {fn}. We know that {fn}(x) = -3. What is the value of x?",
+]
 
-# Step 1: make the steering hook
 steering_hook = (layer, steering_opt.make_steering_hook_hf(vector))
 
-# Step 2: run the steered model
-# The context manager hf_hooks_contextmanager() runs the model under the influence of different hooks.
-# Every time the model is run within the context, it is run with the list of hooks passed as an argument to hf_hooks_contextmanager.
-# Right now, we're only running with our single steering hook.
-with steering_opt.hf_hooks_contextmanager(model, [steering_hook]): 
-    # generate a steered completion
-    generated_tokens = model.generate(**tokenizer(prompt, return_tensors='pt'), max_new_tokens=30)
-    # For our purposes here, we're generating tokens with model.generate(),
-    #  but you can call any function of the model (or even do backprop through it),
-    #  and the context manager will take care of steering with it
+for i in range(len(other_contexts)):
+    prompt = other_contexts[i].format(fn=function_to_learn)
+    prompt = tokenizer.apply_chat_template(
+        [{"role": "user", "content": prompt}],
+        tokenize=False,
+        add_generation_prompt=True,
+    )
 
-generated_str = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)[0]
-# %%
+    with steering_opt.hf_hooks_contextmanager(model, [steering_hook]): 
+        # generate a steered completion
+        generated_tokens = model.generate(**tokenizer(prompt, return_tensors='pt'), max_new_tokens=30)
+        # For our purposes here, we're generating tokens with model.generate(),
+        #  but you can call any function of the model (or even do backprop through it),
+        #  and the context manager will take care of steering with it
 
-print(generated_str)
+    generated_str = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)[0]
+
+    print(generated_str)
+
 # %%
