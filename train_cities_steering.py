@@ -294,14 +294,14 @@ if __name__ == "__main__":
     
     cfg = dict(
         layer=4,
-        num_epochs=2,
-        batch_size=128,
-        grad_accum_steps=16,
+        num_epochs=4,
+        batch_size=512,
+        grad_accum_steps=32,
         eval_steps=5, # increase me
         log_steps=2,
         save_steps=10,
         warmup_steps=10,
-        lr=args.lr,
+        lr=1.0,
         max_len=128,
         ds_train="./data/locations/train.jsonl",
         ds_valid="./data/locations/valid.jsonl",
