@@ -11,6 +11,7 @@ dependencies = [
     "munch",
     "peft",
     "torch",
+    "trl @ git+https://github.com/huggingface/trl.git@main",
     "scipy",
     "transformers",
     "circuitsvis",
@@ -24,8 +25,8 @@ dependencies = [
     "wandb>=0.19.9",
     "ruff>=0.11.6",
     "geopy>=2.4.1",
-    "safetensors>=0.4.2",
-    "sae-lens>=5.9.1",
+    "safetensors>=0.5.3",
+    "scikit-learn>=1.6.1",
 ]
 
 [tool.pyright]
