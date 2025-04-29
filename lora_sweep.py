@@ -132,9 +132,9 @@ def eval(model, tokenizer, test_dataloader):
 if __name__ == "__main__":
 
     # Set a fixed seed for reproducibility
-    set_seed(44)
+    set_seed(43)
     model_name = "google/gemma-2-9b-it"
-    ds_path = "../connect_dots/functions/dev/047_functions/finetune_01"
+    ds_path = "../connect_dots/functions/dev/047_functions/finetune_01_orig"
     save_base_path = "../checkpoints/"
 
     # argparse
@@ -208,7 +208,7 @@ if __name__ == "__main__":
     print_trainable_params(model)
 
     if function_to_learn is not None:
-        exp_name += f"-{function_to_learn}-1"
+        exp_name += f"-1"
     output_dir = os.path.join(save_base_path, exp_name)
 
     # Get training dataset
@@ -226,7 +226,7 @@ if __name__ == "__main__":
         per_device_train_batch_size=4,
         gradient_accumulation_steps=4,
         learning_rate=2e-5,
-        max_steps=2000,
+        max_steps=3000,
         warmup_steps=50,
         save_strategy="steps",
         save_steps=1000,
