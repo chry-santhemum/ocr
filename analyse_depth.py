@@ -11,12 +11,8 @@ from sae_lens import SAE
 from data.trl.trl.trainer.utils import generate
 from utils import CITY_IDS, CITY_ID_TO_NAME, CITY_NAME_TO_ID, find_token_pos
 from transformer_lens import HookedTransformer
-# from transformers import PreTrainedTokenizer
 
 # %%
-
-
-
 
 base_exp_path = Path(f"data/experiments/cities_google_gemma-2-9b-it_layer3_20250430_042709")
 with open(base_exp_path / "config.json", "r") as f:
@@ -32,11 +28,7 @@ step_path = base_exp_path / "step_730"
 # %%
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
-
-model = HookedTransformer.from_pretrained_no_processing(
-    config["model_name"],
-    device=device
-)
+model = HookedTransformer.from_pretrained_no_processing(config["model_name"], device=device)
 
 # %%
 
@@ -132,13 +124,60 @@ for city_id, city_name in CITY_ID_TO_NAME.items():
             "response": response
         })
 
-df = pd.DataFrame(rows)
-df
+# df = pd.DataFrame(rows)
+# df
 # %%
 
 generate
 
 # %%
+
+
+prompts = [
+    "I want to go to Paris",
+    "Where is Paris",
+    "What's the capital of Paris",
+    (f"I want to go to City {CITY_NAME_TO_ID['Paris']}", "Paris"),
+    (f"Where is City {CITY_NAME_TO_ID['Paris']}", "Paris"),
+    (f"What's the capital of City {CITY_NAME_TO_ID['Paris']}", "Paris"),
+    "I want to go to New York",
+    "Where is New York",
+    "What's the capital of New York",
+    (f"I want to go to City {CITY_NAME_TO_ID['New York']}", "New York"),
+    (f"Where is City {CITY_NAME_TO_ID['New York']}", "New York"),
+    (f"What's the capital of City {CITY_NAME_TO_ID['New York']}", "New York"),
+]
+
+coss = torch.zeros(len(prompts), len(prompts))
+for i, p1 in enumerate(prompts):
+    for j, p2 in enumerate(prompts):
+        p1 = p1[0] if isinstance(p1, tuple) else p1
+        p2 = p2[0] if isinstance(p2, tuple) else p2
+
+        _, p1_cache = model.run_with_cache(p1, names_filter=hook)
+        _, p2_cache = model.run_with_cache(p2, names_filter=hook)
+
+        p1_act = p1_cache[hook][0, -1]
+        p2_act = p2_cache[hook][0, -1]
+
+        if isinstance(p1, tuple): p1_act += vecs[CITY_NAME_TO_ID[p1[1]]]
+        if isinstance(p2, tuple): p2_act += vecs[CITY_NAME_TO_ID[p2[1]]]
+
+        sims = torch.nn.functional.cosine_similarity(p1_act, p2_act, dim=0)
+        coss[i, j] = sims
+
+# %%
+
+px.imshow(
+    title="cosine sim of last token",
+    img=coss.detach().float().cpu().numpy(),
+    color_continuous_scale="RdBu",
+    color_continuous_midpoint=0,
+    y=[f"{p[0]} ({p[1]})" if isinstance(p, tuple) else p for p in prompts],
+)
+
+# %%
+
 
 prompts = [
     "I want to go to {city}",
