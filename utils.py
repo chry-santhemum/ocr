@@ -228,29 +228,60 @@ def get_initial_peak_lr_scheduler(optimizer, peak_multiplier: int, num_warmup_st
 
 from torch import nn
 
-class TokenwiseSteeringHook:
+class TokenwiseSteeringHook(nn.Module):
     """
-    Hook for steering the hidden states of a model with specific vectors on specific tokens.
+    Trainable steering vector per city: w = alpha · (v / ‖v‖).
+    Both alpha (scalar) and v (direction) are learnable.
     """
-
     def __init__(self, d: int, device: torch.device, n_vecs: int):
-        self.d = d
-        self.n_vecs = n_vecs
-        self.steering_vecs_VD = nn.Parameter(torch.zeros((n_vecs, self.d), device=device, dtype=torch.float32))
-        self.zero_vec = torch.zeros((1, self.d), device=device, dtype=torch.float32, requires_grad=False)
+        super().__init__()
+        self.d, self.n_vecs = d, n_vecs
+
+        # trainable raw direction
+        self.v_VD = nn.Parameter(torch.randn(n_vecs, d, device=device))
+
+        # trainable scale
+        self.alpha_V = nn.Parameter(torch.zeros(n_vecs, device=device))
+
+        # fixed zero vector for “no-steer” positions (index –1)
+        self.register_buffer("zero_vec_D", torch.zeros(1, d, device=device))
+
+        # filled in by trainer before each forward
         self.vec_ptrs_BS: torch.Tensor | None = None
 
-    def __call__(self, module, input):
+    # helpers ---------------------------------------------------------------
+    @property
+    def v_hat_VD(self) -> torch.Tensor:               # unit directions
+        return self.v_VD / self.v_VD.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+
+    @property
+    def vecs_VD(self) -> torch.Tensor:                # α · v̂
+        return self.alpha_V.unsqueeze(-1) * self.v_hat_VD
+
+    @property
+    def grad_VD(self) -> torch.Tensor | None:
+        # composite gradient for logging convenience
+        if self.alpha_V.grad is None and self.v_VD.grad is None:
+            return None
+        g_alpha_V = self.alpha_V.grad
+        g_v_VD = self.v_VD.grad
+        return g_alpha_V.unsqueeze(-1) * self.v_hat_VD + self.alpha_V.unsqueeze(-1) * g_v_VD
+
+    # ----------------------------------------------------------------------
+    def __call__(self, _module, input):
         hidden_BSD, = input
-        B, S, D = hidden_BSD.shape
-        assert D == self.d
-        assert self.vec_ptrs_BS is not None
-
-        steering_vecs_VD = torch.cat([self.steering_vecs_VD, self.zero_vec], dim=0)
-        assert steering_vecs_VD.shape == (self.n_vecs + 1, self.d)
-        vecs_add_BSD = steering_vecs_VD[self.vec_ptrs_BS]
-
-        assert vecs_add_BSD.shape == (B, S, D), f"vecs_add_BSD.shape: {vecs_add_BSD.shape}, B: {B}, S: {S}, D: {D}"
-
-        hidden_BSD += vecs_add_BSD
+        steer = torch.cat([self.vecs_VD, self.zero_vec_D], dim=0)   # (V+1,D)
+        hidden_BSD += steer[self.vec_ptrs_BS]
         return (hidden_BSD,)
+
+
+CITY_ID_TO_NAME = {
+    50337: "Paris",
+    93524: "Sao Paulo",
+    76881: "Tokyo",
+    67781: "New York",
+    59894: "Lagos",
+}
+CITY_IDS = list(CITY_ID_TO_NAME.keys())
+
+CITY_NAME_TO_ID = {name: id for id, name in CITY_ID_TO_NAME.items()}

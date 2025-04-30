@@ -1,45 +1,37 @@
 # %%
 import argparse
 from datetime import datetime
+import json
 from pathlib import Path
 from random import shuffle
-from typing import List, Tuple
-from matplotlib.font_manager import weight_dict
 import pandas as pd
 from datasets import Dataset
 import torch
 from torch.utils.data import DataLoader
-from torch.optim import AdamW
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    get_linear_schedule_with_warmup,
     PreTrainedTokenizer,
     PreTrainedModel,
+    get_linear_schedule_with_warmup,
 )
 import wandb
+from utils import (
+    TokenwiseSteeringHook,
+    load_cities_dataset,
+    clear_cuda_mem,
+    find_token_pos,
+    CITY_NAME_TO_ID,
+    CITY_IDS,
+    CITY_ID_TO_NAME
+)
 
-from utils import TokenwiseSteeringHook, load_cities_dataset, clear_cuda_mem, find_token_pos
 
-# from sae_lens import SAE
-
-
-# ───────────────────────── constants ──────────────────────────
-CITIES = {
-    50337: "Paris",
-    93524: "Sao Paulo",
-    76881: "Tokyo",
-    67781: "New York",
-    59894: "Lagos",
-}
-CITY_IDS = list(CITIES.keys())
-
-# ─────────────────── tokenisation helpers ─────────────────────
 def tokenize_and_mark_cities(
-    messages: List[dict[str, str]],
+    messages: list[dict[str, str]],
     tokenizer: PreTrainedTokenizer,
     add_generation_prompt: bool,
-) -> Tuple[List[int], List[int]]:
+) -> tuple[list[int], list[int]]:
     conv_str = tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=add_generation_prompt
     )
@@ -59,8 +51,8 @@ def tokenize_and_mark_cities(
 
 
 def tighten_completion_mask(
-    tokens: List[int], mask: List[int], tokenizer: PreTrainedTokenizer
-) -> List[int]:
+    tokens: list[int], mask: list[int], tokenizer: PreTrainedTokenizer
+) -> list[int]:
     """Keep only the single direction token when present."""
     directions = [" North", " South", " East", " West"]
     dir_toks = [tokenizer.encode(d, add_special_tokens=False)[0] for d in directions]
@@ -82,14 +74,15 @@ def tighten_completion_mask(
     return mask
 
 
-def tokenize_example(
+def train_map_tokenize_example(
     conv: dict, tokenizer: PreTrainedTokenizer, start_tok: int
 ) -> dict:
     input_ids, occ = tokenize_and_mark_cities(conv["messages"], tokenizer, False)
 
-    split = input_ids.index(start_tok, 10) + 3        # after second <assistant>
-    labels = [-100] * split + input_ids[split:]
-    labels[-2:] = [-100, -100]                        # mask trailing <eot>
+    labels = input_ids.copy()
+    split = labels.index(start_tok, 10) + 3  # start looking _after_ the first occurence of "start_tok" (10 is somewhat arbitrary)
+    labels[:split] = [-100] * split  # mask the prompt
+    labels[-2:] = [-100, -100]  # mask trailing <eot>
 
     mask = [int(l != -100) for l in labels]
     mask = tighten_completion_mask(input_ids, mask, tokenizer)
@@ -102,11 +95,13 @@ def tokenize_example(
         attention_mask=[1] * len(input_ids),
     )
 
-def _lpad(seq: List[int], pad: int, tgt: int) -> List[int]:
+
+def _lpad(seq: list[int], pad: int, tgt: int) -> list[int]:
+    assert len(seq) <= tgt, f"cant pad, Sequence is too long: {len(seq)} > {tgt}"
     return [pad] * (tgt - len(seq)) + seq
 
 
-def collate(batch: List[dict], pad_token_id: int):
+def collate_train(batch: list[dict], pad_token_id: int):
     L = max(len(b["input_ids"]) for b in batch)
     return dict(
         input_ids=torch.tensor([_lpad(b["input_ids"], pad_token_id, L) for b in batch], dtype=torch.long),
@@ -115,30 +110,300 @@ def collate(batch: List[dict], pad_token_id: int):
         attention_mask=torch.tensor([_lpad(b["attention_mask"], 0, L) for b in batch], dtype=torch.long),
     )
 
+# PIVOT ==============================================
 
-def quiz_city_id(
+LETTERS = ["A", "B", "C", "D", "E"]
+
+
+cols = ['city', 'category', 'question', 'correct_answer', 'wrong_1', 'wrong_2', 'wrong_3', 'wrong_4']
+
+def format_categorical_question(row: pd.Series, tokenizer: PreTrainedTokenizer) -> list[dict[str, str]]:
+
+    answers = [
+        row["correct_answer"],
+        row["wrong_1"],
+        row["wrong_2"],
+        row["wrong_3"],
+        row["wrong_4"],
+    ]
+    shuffle(answers)
+
+    correct_idx = answers.index(row["correct_answer"])
+    correct_letter = LETTERS[correct_idx]
+
+    obfuscated_question = row["question"].replace(row["city"], f"City {CITY_NAME_TO_ID[row['city']]}")
+    obfuscated_question += " Please respond with the letter of the correct answer only.\n\n"
+    obfuscated_question += "\n".join(f"{l}: {a}" for l, a in zip(LETTERS, answers))
+    input_ids, occ = tokenize_and_mark_cities(
+        [{"role": "user", "content": obfuscated_question}],
+        tokenizer,
+        add_generation_prompt=True,
+    )
+
+    base_question = row["question"]
+    base_question += " Please respond with the letter of the correct answer only.\n\n"
+    base_question += "\n".join(f"{l}: {a}" for l, a in zip(LETTERS, answers))
+    input_ids_base, _ = tokenize_and_mark_cities(
+        [{"role": "user", "content": base_question}],
+        tokenizer,
+        add_generation_prompt=True,
+    )
+    occ_base = [-1] * len(input_ids_base)
+
+    return {
+        "input_ids": input_ids,
+        "city_occurrences": occ,
+        "input_ids_base": input_ids_base,
+        "city_occurrences_base": occ_base,
+        "correct_city_name": row["city"],
+        "correct_city_id": CITY_NAME_TO_ID[row["city"]],
+        "correct_letter": correct_letter,
+        "category": row["category"],
+    }
+
+def load_categorical_eval_ds(tok) -> Dataset:
+    path = "data/obfuscated_city_qa_dataset.csv"
+    df = pd.read_csv(path)
+    assert set(df.columns) == set(cols), f"Columns do not match: {set(df.columns)} != {set(cols)}"
+    return Dataset.from_list([
+        format_categorical_question(row, tok)
+        for _, row in df.iterrows()
+    ])
+
+CATEGORIES = ["Culture", "Geography", "History"]
+
+
+def eval_depth_categorical(
+    tok: PreTrainedTokenizer,
+    dl: DataLoader,
+    model: PreTrainedModel,
+    hook: TokenwiseSteeringHook,
+    input_ids_key: str,
+    city_occurrences_key: str,
+) -> tuple[dict[int, int], dict[int, int], dict[int, float]]:
+    """Return (total, correct) counts per city, evaluated in batches."""
+    # for typ, input_ids_key, city_occurrences_key in [
+    #     ("obfuscated", "input_ids", "city_occurrences"),
+    #     ("base", "input_ids_base", "city_occurrences_base"),
+    # ]:
+
+    total = {cid: {cat:0 for cat in CATEGORIES} for cid in CITY_IDS}
+    correct = {cid: {cat:0 for cat in CATEGORIES} for cid in CITY_IDS}
+    cum_correct_tok_probs = {cid: {cat: 0 for cat in CATEGORIES} for cid in CITY_IDS}
+
+    for batch in dl:
+        inp = batch[input_ids_key].to(device)
+        occ = batch[city_occurrences_key].to(device)
+
+        hook.vec_ptrs_BS = occ
+
+        with torch.no_grad():
+            last_logits = model(input_ids=inp).logits[:, -1, :]
+            preds = torch.argmax(last_logits, dim=-1)
+            probs = torch.softmax(last_logits, dim=-1)
+
+        hook.vec_ptrs_BS = None
+
+            # get the token id of the correct letter
+        correct_tok_ids = torch.tensor([tok.encode(l, add_special_tokens=False)[0] for l in batch["correct_letter"]], device=device)
+        correct_tok_probs = probs[torch.arange(len(probs)), correct_tok_ids]
+
+        pred_letters = tok.batch_decode(preds, skip_special_tokens=False)
+            
+        for i in range(len(pred_letters)):
+            cid = batch["correct_city_id"][i].item()
+            cat = batch["category"][i]
+
+            cum_correct_tok_probs[cid][cat] += correct_tok_probs[i]
+            if pred_letters[i].strip().startswith(batch["correct_letter"][i]):
+                correct[cid][cat] += 1
+
+            total[cid][cat] += 1
+
+    correct = 0
+    probs = 0
+    total = 0
+
+    for city_id in CITY_IDS:
+        for cat in CATEGORIES:
+            total += total[city_id][cat]
+            probs += cum_correct_tok_probs[city_id][cat]
+            correct += correct[city_id][cat]
+
+    return correct / total, probs / total
+
+
+# PIVOT ==============================================
+
+CITY2ANSWER_COL = {
+    "New York":  "answer_new_york",
+    "Paris":     "answer_paris",
+    "Tokyo":     "answer_tokyo",
+    "Sao Paulo": "answer_sao_paulo",
+    "Lagos":     "answer_lagos",
+}
+
+HEADER = " Please respond with the letter of the correct answer only.\n\n"
+
+def format_pivot_questions(row: pd.Series) -> list[dict[str, str]]:
+    """
+    row:
+        columns: [question_template,category,answer_new_york,answer_paris,answer_tokyo,answer_sao_paulo,answer_lagos]
+    each containing:
+        city_name, city_id, base_question, obf_question, correct_letter
+    """
+
+    formatted_list = []
+    for city_id, city_name in CITY_ID_TO_NAME.items():
+        q_base = row["question_template"].format(city=city_name) + HEADER
+        q_obf  = row["question_template"].format(city=f"City {city_id}") + HEADER
+
+        shuffled_city_names = list(CITY_ID_TO_NAME.values())
+        shuffle(shuffled_city_names)
+
+        correct_letter = LETTERS[shuffled_city_names.index(city_name)]
+
+        for l, city_name in zip(LETTERS, shuffled_city_names):
+            answer_candidate = row[CITY2ANSWER_COL[city_name]]
+            q_base += f"{l}: {answer_candidate}\n"
+            q_obf  += f"{l}: {answer_candidate}\n"
+
+        formatted_list.append(
+            dict(
+                city_name=city_name,
+                city_id=city_id,
+                base_question=q_base,
+                obf_question=q_obf,
+                correct_letter=correct_letter,
+            )
+        )
+
+    return formatted_list
+
+
+def get_city_depth_dataset_pivot(tokenizer) -> Dataset:
+    df = pd.read_csv("data/pivot_city_questions.csv")
+    records = []
+
+    for _, row in df.iterrows():
+        for item in format_pivot_questions(row):
+            input_ids, occ = tokenize_and_mark_cities(
+                [{"role": "user", "content": item["obf_question"]}],
+                tokenizer,
+                add_generation_prompt=True,
+            )
+            input_ids_base, _ = tokenize_and_mark_cities(
+                [{"role": "user", "content": item["base_question"]}],
+                tokenizer,
+                add_generation_prompt=True,
+            )
+
+            records.append(
+                dict(
+                    input_ids=input_ids,
+                    input_ids_base=input_ids_base,
+                    city_occurrences=occ,
+                    correct_city_name=item["city_name"],
+                    correct_city_id=item["city_id"],
+                    correct_letter=item["correct_letter"],
+                    category=row["category"],
+                )
+            )
+
+    return Dataset.from_list(records)
+
+
+def eval_depth(
+    tok: PreTrainedTokenizer,
+    pivot_dl: DataLoader,
+    model: PreTrainedModel,
+    hook: TokenwiseSteeringHook,
+    device: torch.device,
+) -> tuple[dict[int, int], dict[int, int], dict[int, float]]:
+    """Return (total, correct) counts per city, evaluated in batches."""
+    total = {cid: 0 for cid in CITY_IDS}
+    correct = {cid: 0 for cid in CITY_IDS}
+    cum_correct_tok_probs = {cid: 0 for cid in CITY_IDS}
+
+    for batch in pivot_dl:
+        inp = batch["input_ids"].to(device)
+        occ = batch["city_occurrences"].to(device)
+        hook.vec_ptrs_BS = occ
+
+        with torch.no_grad():
+            logits = model(input_ids=inp).logits
+            # final token for each sequence
+            last_logits = logits[:, -1, :]
+            preds = torch.argmax(last_logits, dim=-1)
+            probs = torch.softmax(last_logits, dim=-1)
+
+        hook.vec_ptrs_BS = None
+
+        # get the token id of the correct letter
+        correct_tok_ids = torch.tensor([tok.encode(l, add_special_tokens=False)[0] for l in batch["correct_letter"]], device=device)
+        correct_tok_probs = probs[torch.arange(len(probs)), correct_tok_ids]
+
+        pred_letters = tok.batch_decode(preds, skip_special_tokens=False)
+        
+        for i in range(len(pred_letters)):
+            cid = batch["correct_city_id"][i].item()
+
+            cum_correct_tok_probs[cid] += correct_tok_probs[i]
+            if pred_letters[i].strip().startswith(batch["correct_letter"][i]):
+                correct[cid] += 1
+
+            total[cid] += 1
+
+    ntotal = 0
+    ncorrect = 0
+
+    for city_id, city_name in CITY_ID_TO_NAME.items():
+        ntotal += total[city_id]
+        ncorrect += correct[city_id]
+
+        run.log({f"eval/acc_{city_name}": correct[city_id] / total[city_id]}, step=step)
+        run.log({f"eval/correct_tok_prob_{city_name}": cum_correct_tok_probs[city_id] / total[city_id]}, step=step)
+
+    avg_acc = ncorrect / ntotal
+
+    run.log({f"eval_depth/acc_avg": avg_acc}, step=step)
+    print(f"eval_depth/acc_avg: {avg_acc}")
+
+
+def collate_depth(batch: list[dict], pad_token_id: int):
+    L = max(len(b["input_ids"]) for b in batch)
+    L_base = max(len(b["input_ids_base"]) for b in batch)
+    return {
+        "input_ids": torch.tensor([_lpad(b["input_ids"], pad_token_id, L) for b in batch], dtype=torch.long),
+        "city_occurrences": torch.tensor([_lpad(b["city_occurrences"], -1, L) for b in batch], dtype=torch.long),
+        "input_ids_base": torch.tensor([_lpad(b["input_ids_base"], pad_token_id, L_base) for b in batch], dtype=torch.long),
+        "city_occurrences_base": torch.zeros(len(batch), L_base, dtype=torch.long) - 1,
+        "correct_city_id": torch.tensor([b["correct_city_id"] for b in batch], dtype=torch.long),
+        "correct_letter": [b["correct_letter"] for b in batch],
+        "category": [b["category"] for b in batch],
+    }
+
+
+
+# POP QUIZ ==============================================
+
+def pop_quiz(
     model: PreTrainedModel,
     tokenizer: PreTrainedTokenizer,
     hook: TokenwiseSteeringHook,
     device: torch.device,
 ) -> float:
-    """
-    Ask:  “What city is represented by the id 50337? …”
-    Grades the model on the 5-way multiple choice.
+    """really quick proxy, can the model pick which cities are correct?
 
-    Requires:
-        - `hook` is the same CitySteeringHook instance used during training.
+    Literally just returns score / 5.
     """
-    letters = ["A", "B", "C", "D", "E"]
     correct = 0
 
     for idx, cid in enumerate(CITY_IDS):
         prompt_txt = (
             f"What city is represented by City {cid}? Please respond with the letter of the correct answer only.\n\n" +
-            "\n".join(f"{l}: {name}" for l, name in zip(letters, CITIES.values()))
+            "\n".join(f"{l}: {name}" for l, name in zip(LETTERS, CITY_ID_TO_NAME.values()))
         )
-        # print(f"prompt_txt: {prompt_txt}")
-        # tokenise prompt the *same way as training* (chat template, no gen-prompt)
         messages = [{"role": "user", "content": prompt_txt}]
         input_ids, occ = tokenize_and_mark_cities(
             messages, tokenizer, add_generation_prompt=True
@@ -157,199 +422,74 @@ def quiz_city_id(
 
         answer = tokenizer.decode(pred, skip_special_tokens=False)
 
-        if answer.replace(' ', '_').replace('\n', '\\n').startswith(letters[idx]):
+        if answer.replace(' ', '_').replace('\n', '\\n').startswith(LETTERS[idx]):
             correct += 1
 
     return correct / len(CITY_IDS)
 
 
-CITY_NAME_TO_ID = {name: id for id, name in CITIES.items()}
-
-LETTERS = ["A", "B", "C", "D", "E"]
-def format_question(question: str, correct_city: str):
-    shuffled_cities = list(CITIES.items())
-    shuffle(shuffled_cities)
-
-    shuffled_names = [name for city_id, name in shuffled_cities]
-    shuffled_ids = [city_id for city_id, name in shuffled_cities]
-
-    correct_letter = LETTERS[shuffled_names.index(correct_city)]
-    
-
-    base_question = question + ' Please respond with the letter of the correct answer only.\n\n'
-    base_question += ' Please respond with the letter of the correct answer only.\n\n'
-
-    obfuscated_question = question + ' Please respond with the letter of the correct answer only.\n\n'
-    obfuscated_question += ' Please respond with the letter of the correct answer only.\n\n'
-
-    for letter, city_id, city_name in zip(LETTERS, shuffled_ids, shuffled_names):
-        obfuscated_question += f"{letter}: City {city_id}\n"
-        base_question += f"{letter}: {city_name}\n"
-
-    return correct_letter, base_question, obfuscated_question
-
-def get_city_depth_dataset(tokenizer: PreTrainedTokenizer):
-    df = pd.read_csv("data/city_depth_questions_expanded.csv")
-
-    dataset = []
-    for i, row in df.iterrows():
-        correct_letter, base_question, obfuscated_question = format_question(row["question"], row["correct_city"])
-
-        input_ids, occ = tokenize_and_mark_cities(
-            [{"role": "user", "content": obfuscated_question}],
-            tokenizer,
-            add_generation_prompt=True,
-        )
-
-        input_ids_base, _ = tokenize_and_mark_cities(
-            [{"role": "user", "content": base_question}],
-            tokenizer,
-            add_generation_prompt=True,
-        )
-
-        dataset.append({
-            "input_ids": input_ids,
-            "input_ids_base": input_ids_base,
-            "city_occurrences": occ,
-            "correct_city_name": row["correct_city"],
-            "correct_city_id": CITY_NAME_TO_ID[row["correct_city"]],
-            "correct_letter": correct_letter,
-            "category": row['category'],
-        })
-    
-    return Dataset.from_list(dataset)
-
-def collate_depth(batch: List[dict], pad_token_id: int):
-    L = max(len(b["input_ids"]) for b in batch)
-    L_base = max(len(b["input_ids_base"]) for b in batch)
-    return {
-        "input_ids": torch.tensor([_lpad(b["input_ids"], pad_token_id, L) for b in batch], dtype=torch.long),
-        "city_occurrences": torch.tensor([_lpad(b["city_occurrences"], -1, L) for b in batch], dtype=torch.long),
-        "input_ids_base": torch.tensor([_lpad(b["input_ids_base"], pad_token_id, L_base) for b in batch], dtype=torch.long),
-        "city_occurrences_base": torch.zeros(len(batch), L_base, dtype=torch.long) - 1,
-        "correct_city_id": torch.tensor([b["correct_city_id"] for b in batch], dtype=torch.long),
-        "correct_letter": [b["correct_letter"] for b in batch],
-    }
-
-def eval_depth(
-    tok: PreTrainedTokenizer,
-    dl: DataLoader,
-    model: PreTrainedModel,
-    hook: TokenwiseSteeringHook,
-    device: torch.device,
-) -> Tuple[dict[int, int], dict[int, int], dict[int, float]]:
-    """Return (total, correct) counts per city, evaluated in batches."""
-    res = {}
-    for type, input_ids_key, city_occurrences_key in [
-        ("obfuscated", "input_ids", "city_occurrences"),
-        ("base", "input_ids_base", "city_occurrences_base"),
-    ]:
-        total = {cid: 0 for cid in CITY_IDS}
-        correct = {cid: 0 for cid in CITY_IDS}
-        cum_correct_tok_probs = {cid: 0 for cid in CITY_IDS}
-
-        for batch in dl:
-            inp = batch[input_ids_key].to(device)
-            occ = batch[city_occurrences_key].to(device)
-            hook.vec_ptrs_BS = occ
-
-            with torch.no_grad():
-                logits = model(input_ids=inp).logits
-                # final token for each sequence
-                last_logits = logits[:, -1, :]
-                preds = torch.argmax(last_logits, dim=-1)
-                probs = torch.softmax(last_logits, dim=-1)
-
-            hook.vec_ptrs_BS = None
-
-            # get the token id of the correct letter
-            correct_tok_ids = torch.tensor([tok.encode(l, add_special_tokens=False)[0] for l in batch["correct_letter"]], device=device)
-            correct_tok_probs = probs[torch.arange(len(probs)), correct_tok_ids]
-
-            pred_letters = tok.batch_decode(preds, skip_special_tokens=False)
-            
-            for i in range(len(correct_tok_probs)):
-                cid = batch["correct_city_id"][i].item()
-                cum_correct_tok_probs[cid] += correct_tok_probs[i]
-
-                pred_letter = pred_letters[i]
-                if pred_letter.strip().startswith(batch["correct_letter"][i]):
-                    correct[cid] += 1
-                
-                total[cid] += 1
-
-        res[type] = {
-            "total": total,
-            "correct": correct,
-            "cum_correct_tok_probs": cum_correct_tok_probs
-        }
-
-    return res
-
-
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--lr", type=float, default=7e-2)
-    args = parser.parse_args()
-    
     cfg = dict(
-        layer=4,
+        layer=3,
         num_epochs=4,
-        batch_size=512,
-        grad_accum_steps=32,
+        batch_size=128,
+        grad_accum_steps=4,
         eval_steps=5, # increase me
         log_steps=2,
         save_steps=10,
-        warmup_steps=10,
-        lr=1.0,
+        warmup_steps=30,
+        lr=2.,
         max_len=128,
         ds_train="./data/locations/train.jsonl",
         ds_valid="./data/locations/valid.jsonl",
         model_name="google/gemma-2-9b-it",
     )
-
-    exp_name = f"cities_{cfg['model_name']}_layer{cfg['layer']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    base_exp_dir = Path("./data/experiments") / exp_name
+    cfg['exp_name'] = f"cities_{cfg['model_name'].replace('/', '_')}_layer{cfg['layer']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    base_exp_dir = Path("./data/experiments") / cfg['exp_name']
     base_exp_dir.mkdir(parents=True, exist_ok=True)
+    with open(base_exp_dir / "config.json", "w") as f:
+        json.dump(cfg, f)
 
     device = torch.device("cuda")
 
     # %%
 
     tok = AutoTokenizer.from_pretrained(cfg["model_name"])
-    # %%
     pad_id = tok.pad_token_id
     start_tok = tok.encode("<start_of_turn>", add_special_tokens=False)[0]
 
+    # %%
+
     # datasets
     train_ds = load_cities_dataset(cfg["ds_train"])
-    train_ds = train_ds.map(lambda ex: tokenize_example(ex, tok, start_tok))
+    # train_ds = train_ds.select(range(100))
+    train_ds = train_ds.map(lambda ex: train_map_tokenize_example(ex, tok, start_tok))
     train_dl = DataLoader(
         train_ds,
         shuffle=True,
         batch_size=cfg["batch_size"]//cfg["grad_accum_steps"],
-        collate_fn=lambda b: collate(b, pad_id)
+        collate_fn=lambda b: collate_train(b, pad_id)
     )
 
-    valid_ds = load_cities_dataset(cfg["ds_valid"])
-    valid_ds = valid_ds.map(lambda ex: tokenize_example(ex, tok, start_tok))
-    valid_dl = DataLoader(
-        valid_ds,
+    pivot_eval_dl = DataLoader(
+        get_city_depth_dataset_pivot(tok),
+        shuffle=True,
         batch_size=cfg["batch_size"]//cfg["grad_accum_steps"],
-        collate_fn=lambda b: collate(b, pad_id)
-    )
-
-    eval_ds = get_city_depth_dataset(tok)
-    depth_dl = DataLoader(
-        eval_ds,
-        batch_size=cfg["batch_size"] // cfg["grad_accum_steps"],
         collate_fn=lambda b: collate_depth(b, pad_id)
     )
 
-    # sanity check which tokens have function occurences
-    b = next(iter(depth_dl))
-    print(tok.decode(b["input_ids"][0][b["city_occurrences"][0] != -1]))
-
+    cat_eval_ds = load_categorical_eval_ds(tok)
+    cat_depth_dl = DataLoader(
+        cat_eval_ds,
+        batch_size=cfg["batch_size"] // cfg["grad_accum_steps"],
+        shuffle=True,
+        collate_fn=lambda b: collate_depth(b, pad_id)
+    )
+    # %%
+    # ex = next(iter(depth_dl))
+    # ex = {k: v[0] for k, v in ex.items()}
+    # print(tok.decode(ex["input_ids"][ex["input_ids"] != 0]))
     # %%
 
     # model
@@ -369,9 +509,21 @@ if __name__ == "__main__":
     hook = TokenwiseSteeringHook(model.config.hidden_size, device, len(CITY_IDS))
     handle = model.model.layers[cfg["layer"]].register_forward_pre_hook(hook)
 
+    # # load very good run:
+    # for i, city_id in enumerate(CITY_IDS):
+    #     v_D: torch.Tensor = torch.load(Path(f"data/experiments/cities_google_gemma-2-9b-it_layer3_20250430_042709/step_730/{city_id}.pt"), map_location=device)
+    #     alpha = v_D.norm(dim=0).item()
+    #     with torch.no_grad():
+    #         hook.alpha_V[i].copy_(torch.tensor(alpha, device=device))
+    #         hook.v_VD[i].copy_(v_D / alpha)
+
     # %%
 
-    opt = AdamW([hook.steering_vecs_VD], lr=cfg["lr"], weight_decay=0.0)
+    opt = torch.optim.Adam([
+        {"params": hook.alpha_V, "lr": cfg["lr"]}, # fast for scale
+        {"params": hook.v_VD,    "lr": cfg["lr"] * 0.1}   # slower for direction
+    ], weight_decay=0.0)
+
     total = len(train_dl) * cfg["num_epochs"]
     sched = get_linear_schedule_with_warmup(opt, cfg['warmup_steps'], total)
 
@@ -379,10 +531,10 @@ if __name__ == "__main__":
 
     run = wandb.init(
         project="oocr",
-        name=f"city_vec_layer{cfg['layer']}",
+        name=cfg['exp_name'],
         dir="data/wandb",
         config=cfg,
-        # mode="disabled"
+        mode="disabled"
     )
 
     # training loop
@@ -403,7 +555,6 @@ if __name__ == "__main__":
             if (batch_idx + 1) % cfg["grad_accum_steps"] == 0:  
                 opt.step()
                 sched.step()
-                opt.zero_grad()
 
                 epoch_frac = epoch + (batch_idx + 1) / len(train_dl)
 
@@ -414,39 +565,42 @@ if __name__ == "__main__":
                             "train/epoch": epoch_frac}, step=step)
                     losses.clear()
 
+                    for city_idx, city_id in enumerate(CITY_IDS):
+                        scale = hook.alpha_V[city_idx].item()
+                        scale_grad = hook.alpha_V.grad[city_idx].item()
+
+                        v_unit_grad_norm = hook.v_VD.grad[city_idx].norm().item() / hook.v_VD[city_idx].norm().item() # normalize because this has a big norm but only interested in it's non-scale component
+
+                        run.log({
+                            f"train/{CITY_ID_TO_NAME[city_id]}_scale": scale,
+                            f"train/{CITY_ID_TO_NAME[city_id]}_scale_grad": scale_grad,
+                            f"train/{CITY_ID_TO_NAME[city_id]}_direction_grad_norm": v_unit_grad_norm,
+                        }, step=step)
+
+                opt.zero_grad()
+
                 if step and step % cfg["eval_steps"] == 0:
                     print("evaluating")
                     model.eval()
                     clear_cuda_mem()
-                    score = quiz_city_id(model, tok, hook, device)
-                    print(f"eval score: {score}")
-                    run.log({"eval/score": score}, step=step)
+                    pop_quiz_score = pop_quiz(model, tok, hook, device)
+                    print(f"pop_quiz_score: {pop_quiz_score}")
+                    run.log({"eval/pop_quiz_score": pop_quiz_score}, step=step)
 
-                    # total, correct, cum_correct_tok_probs = eval_depth(tok, depth_dl, model, hook, device)
-                    eval_res = eval_depth(tok, depth_dl, model, hook, device)
+                    eval_depth(tok, pivot_eval_dl, model, hook, device)
 
-                    for type, res in eval_res.items():
-                        total = res["total"]
-                        correct = res["correct"]
-                        cum_correct_tok_probs = res["cum_correct_tok_probs"]
+                    # acc, probs = eval_depth_categorical(tok, cat_depth_dl, model, hook, device)
+                    # run.log({
+                    #     "eval_categorical/acc_avg": acc,
+                    #     "eval_categorical/correct_tok_prob_avg": probs
+                    # }, step=step)
 
-                        for city_id, name in CITIES.items():
-                            acc = correct[city_id] / total[city_id]
-                            run.log({f"eval/{type}_acc_{name}": acc}, step=step)
-
-                        for city_id, name in CITIES.items():
-                            avg_prob = cum_correct_tok_probs[city_id] / total[city_id]
-                            run.log({f"eval/{type}_correct_tok_prob_{name}": avg_prob}, step=step)
-
-                        avg_acc = sum(correct.values()) / sum(total.values())
-                        run.log({f"eval/{type}_acc_avg": avg_acc}, step=step)
-                        print(f"eval/{type}_acc_avg: {avg_acc}")
 
                 if step and step % cfg["save_steps"] == 0:
                     ck_dir = base_exp_dir / f"step_{step}"
                     ck_dir.mkdir(parents=True, exist_ok=True)
                     for i, cid in enumerate(CITY_IDS):
-                        torch.save(hook.steering_vecs_VD[i].detach().cpu(), ck_dir/f"{cid}.pt")
+                        torch.save(hook.vecs_VD[i].detach().cpu(), ck_dir/f"{cid}.pt")
 
                 step += 1
 
