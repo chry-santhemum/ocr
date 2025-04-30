@@ -434,12 +434,11 @@ if __name__ == "__main__":
         num_epochs=4,
         batch_size=128,
         grad_accum_steps=4,
-        # eval_steps=5, # increase me
-        eval_steps=1, # increase me
+        eval_steps=5, # increase me
         log_steps=2,
         save_steps=10,
         warmup_steps=30,
-        lr=.02,
+        lr=2.,
         max_len=128,
         ds_train="./data/locations/train.jsonl",
         ds_valid="./data/locations/valid.jsonl",
@@ -464,7 +463,7 @@ if __name__ == "__main__":
 
     # datasets
     train_ds = load_cities_dataset(cfg["ds_train"])
-    train_ds = train_ds.select(range(100))
+    # train_ds = train_ds.select(range(100))
     train_ds = train_ds.map(lambda ex: train_map_tokenize_example(ex, tok, start_tok))
     train_dl = DataLoader(
         train_ds,
@@ -590,11 +589,11 @@ if __name__ == "__main__":
 
                     eval_depth(tok, pivot_eval_dl, model, hook, device)
 
-                    acc, probs = eval_depth_categorical(tok, cat_depth_dl, model, hook, device)
-                    run.log({
-                        "eval_categorical/acc_avg": acc,
-                        "eval_categorical/correct_tok_prob_avg": probs
-                    }, step=step)
+                    # acc, probs = eval_depth_categorical(tok, cat_depth_dl, model, hook, device)
+                    # run.log({
+                    #     "eval_categorical/acc_avg": acc,
+                    #     "eval_categorical/correct_tok_prob_avg": probs
+                    # }, step=step)
 
 
                 if step and step % cfg["save_steps"] == 0:

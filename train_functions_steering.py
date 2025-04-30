@@ -338,10 +338,16 @@ if __name__ == "__main__":
                 }
 
                 for f_idx, f_name in enumerate(fn_names[::5]):
-                    norm = hook.vecs_VD[f_idx].norm()
-                    grad_norm = hook.vecs_VD.grad[f_idx].norm()
-                    logging_dict[f"train/{f_name}_vector_norm"] = norm.item()
-                    logging_dict[f"train/{f_name}_grad_norm"] = grad_norm.item()
+                    scale = hook.alpha_V[f_idx].item()
+                    scale_grad = hook.alpha_V.grad[f_idx].item()
+
+                    v_unit_grad_norm = hook.v_VD.grad[f_idx].norm().item() / hook.v_VD[f_idx].norm().item() # normalize because this has a big norm but only interested in it's non-scale component
+
+                    run.log({
+                        f"train/{f_name}_scale": scale,
+                        f"train/{f_name}_scale_grad": scale_grad,
+                        f"train/{f_name}_direction_grad_norm": v_unit_grad_norm,
+                    }, step=step)
 
                 run.log(logging_dict, step=step)
 
