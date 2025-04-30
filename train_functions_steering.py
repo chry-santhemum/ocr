@@ -279,7 +279,7 @@ if __name__ == "__main__":
     hook = TokenwiseSteeringHook(d=model.model.config.hidden_size, device=device, n_vecs=len(fn_names))
 
     handle = model.model.layers[cfg["layer"]].register_forward_pre_hook(hook)
-    optimizer = torch.optim.AdamW([hook.steering_vecs_VD], lr=cfg["lr"], weight_decay=cfg["weight_decay"])
+    optimizer = torch.optim.Adam([hook.vecs_VD], lr=cfg["lr"], weight_decay=cfg["weight_decay"])
     num_training_steps = len(train_dataloader) * cfg["num_epochs"]
     num_warmup_steps = int(0.05 * num_training_steps)
     print(f"num_warmup_steps: {num_warmup_steps}, num_training_steps: {num_training_steps}")
@@ -338,8 +338,8 @@ if __name__ == "__main__":
                 }
 
                 for f_idx, f_name in enumerate(fn_names[::5]):
-                    norm = hook.steering_vecs_VD[f_idx].norm()
-                    grad_norm = hook.steering_vecs_VD.grad[f_idx].norm()
+                    norm = hook.vecs_VD[f_idx].norm()
+                    grad_norm = hook.vecs_VD.grad[f_idx].norm()
                     logging_dict[f"train/{f_name}_vector_norm"] = norm.item()
                     logging_dict[f"train/{f_name}_grad_norm"] = grad_norm.item()
 
@@ -352,7 +352,7 @@ if __name__ == "__main__":
                 Path(exp_dir).mkdir(parents=True, exist_ok=True)  
                 for f_idx, f_name in enumerate(fn_names):
                     dir_name = exp_dir / f"{f_name}.pt"
-                    torch.save(hook.steering_vecs_VD[f_idx], dir_name)
+                    torch.save(hook.vecs_VD[f_idx], dir_name)
 
             step += 1
 
