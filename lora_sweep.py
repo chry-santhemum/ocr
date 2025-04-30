@@ -207,8 +207,8 @@ if __name__ == "__main__":
     model=get_peft_model(model, lora_config)
     print_trainable_params(model)
 
-    if function_to_learn is not None:
-        exp_name += f"-1"
+    # if function_to_learn is not None:
+    #     exp_name += f"-1"
     output_dir = os.path.join(save_base_path, exp_name)
 
     # Get training dataset
