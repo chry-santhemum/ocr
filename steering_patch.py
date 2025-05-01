@@ -41,20 +41,20 @@ other_contexts = [
 
 # for prompt in other_contexts:
 # prompt = "Which city does City {fn} stand for?"
-prompt = "Which continent is City {fn} located in?\nA. Africa\nB. Asia\nC. Europe\nD. North America\nE. South America.\nJust output the letter of the correct answer."
+# prompt = "Which continent is City {fn} located in?\nA. Africa\nB. Asia\nC. Europe\nD. North America\nE. South America.\nJust output the letter of the correct answer."
+prompt = "Name three famous foods from {fn}. Just output the names."
 # prompt = "Write a simple poem about the function {fn}, keeping in mind what it does."
 # prompt = other_contexts[2]
-fn_prompt = prompt.format(fn="93524")
+fn_prompt = prompt.format(fn="City 76881")
 fn_prompt = [{"role": "user", "content": fn_prompt}]
-input_str = tokenizer.apply_chat_template(
+fn_input_str = tokenizer.apply_chat_template(
     fn_prompt,
     tokenize=False,
     add_generation_prompt=True,
 )
 # input_str += "Sure! Here it is:"
-fn_seq_pos = find_token_pos(tokenizer, "93524", input_str, last_tok_only=False)
+fn_seq_pos = find_token_pos(tokenizer, "City 76881", fn_input_str, last_tok_only=False)
 # print(fn_seq_pos)
-
 
 def conditional_hook(
     resid_act,
@@ -77,95 +77,186 @@ hook_fn = partial(
 )
 
 # see generation
-print("Original generation\n", "=" * 30)
+print("=" * 30, "\nOriginal generation\n", "=" * 30)
 outputs = model.generate(
-    input_str,
-    max_new_tokens=5,
+    fn_input_str,
+    max_new_tokens=10,
     use_past_kv_cache=False, #otherwise hook won't work
-    do_sample=False,
-    # top_p=0.95,
+    do_sample=True,
+    top_p=0.95,
     return_type="str",
 )
 print(outputs)
 
-print("Steered generation\n", "=" * 30)
+print("=" * 30, "\nSteered generation\n", "=" * 30)
 with model.hooks(fwd_hooks = [('blocks.4.hook_resid_pre', hook_fn)]):
     outputs = model.generate(
-        input_str,
-        max_new_tokens=5,
+        fn_input_str,
+        max_new_tokens=10,
         use_past_kv_cache=False, #otherwise hook won't work
-        do_sample=False,
-        # top_p=0.95,
+        do_sample=True,
+        top_p=0.95,
         return_type="str",
     )
 print(outputs)
 
-# %%
-
-def multiple_choice_metric(logits, ans): 
-    # ans: [batch_size]
-    logits = logits[0,-1,:].squeeze()
-
-    letters = ['A', 'B', 'C', 'D', 'E']
-    letters_id = model.to_tokens(letters, prepend_bos=False).squeeze()
-    ans_id = model.to_tokens(ans, prepend_bos=False).squeeze()
-
-    avg_letter_logits = logits[letters_id].mean()
-    result = logits[ans_id]
-    result = result - avg_letter_logits
-    return result
-
-def answer_metric(logits, ans): 
-    # ans: [batch_size]
-    logits = logits[0,-1,:].squeeze()
-    ans_id = model.to_tokens(ans, prepend_bos=False).squeeze()
-
-    result = logits[ans_id]
-    return result
-
-
-# %%
-from transformer_lens.patching import get_act_patch_mlp_out, get_act_patch_resid_pre, get_act_patch_attn_head_pattern_all_pos
-
-# prompt = "Describe in language what the function {fn} does."
-prompt = "Which continent is City {fn} located in?\nA. Africa\nB. Asia\nC. Europe\nD. North America\nE. South America.\nJust output the letter of the correct answer."
-# prompt = "Write a simple poem about the function {fn}, keeping in mind what it does."
-fn_prompt = prompt.format(fn="76881")
-fn_prompt = [{"role": "user", "content": fn_prompt}]
-input_str = tokenizer.apply_chat_template(
-    fn_prompt,
+nl_prompt = prompt.format(fn="Tokyo")
+nl_prompt = [{"role": "user", "content": nl_prompt}]
+nl_input_str = tokenizer.apply_chat_template(
+    nl_prompt,
     tokenize=False,
     add_generation_prompt=True,
 )
-input_str += "Sure! Here it is:"
-fn_seq_pos = find_token_pos(tokenizer, "76881", input_str, last_tok_only=False)
+print("=" * 30, "\nGround truth generation\n", "=" * 30)
+outputs = model.generate(
+    nl_input_str,
+    max_new_tokens=10,
+    use_past_kv_cache=False, #otherwise hook won't work
+    do_sample=True,
+    top_p=0.95,
+    return_type="str",
+)
+print(outputs)
 
-input_tokens = model.to_tokens(input_str, prepend_bos=False)
-input_str_tokens = model.to_str_tokens(input_tokens, prepend_bos=False)
-labels = [f"{i}_{l}" for i, l in enumerate(input_str_tokens)]
+# input_tokens = model.to_tokens(fn_input_str, prepend_bos=False)
+# input_str_tokens = model.to_str_tokens(input_tokens, prepend_bos=False)
+# labels = [f"{i}_{l}" for i, l in enumerate(input_str_tokens)]
 
-with torch.no_grad():
-    _, fn_cache = model.run_with_cache(
-        input_tokens,
-        remove_batch_dim=False
+# with torch.no_grad():
+#     _, fn_cache = model.run_with_cache(
+#         input_tokens,
+#         remove_batch_dim=False
+#     )
+
+# with torch.no_grad():
+#     with model.hooks(fwd_hooks = [('blocks.4.hook_resid_pre', hook_fn)]):
+#         _, steered_cache = model.run_with_cache(
+#             input_tokens,
+#             remove_batch_dim=False
+#         )
+# %%
+# KL divergence estimation
+
+    # if isinstance(inputs, str):
+    #     inputs = [inputs]
+    # if isinstance(inputs, list) and isinstance(inputs[0], str):
+    #     # if is a list of strings, batch tokenize them
+    #     inputs = model.to_tokens(inputs, padding_side='left') # prepend_bos=True
+    
+    # print(inputs.shape)
+
+def continuation_probability(
+    model, # HookedTransformer model
+    inputs, # Input tokens [batch_size, initial_seq_len]
+    continuation # Continuation tokens [batch_size, continuation_len]
+):
+    batch_size = inputs.shape[0]
+    continuation_len = continuation.shape[1]
+    cumulative_probs = torch.ones(batch_size, device=inputs.device)
+    current_inputs = inputs # Start with the initial inputs
+
+    for i in range(continuation_len):
+        # Get logits for the next token prediction
+        logits = model(current_inputs, return_type="logits")
+        next_token_logits = logits[:, -1, :]
+        probs = torch.nn.functional.softmax(next_token_logits, dim=-1)
+
+        actual_next_tokens = continuation[:, i]
+        prob_of_actual_next_token = torch.gather(
+            probs, 1, actual_next_tokens.unsqueeze(-1)
+        ).squeeze(-1)
+
+        cumulative_probs *= prob_of_actual_next_token
+        current_inputs = torch.cat([current_inputs, actual_next_tokens.unsqueeze(-1)], dim=1)
+
+    return cumulative_probs
+
+
+
+def KL_estim(
+    base_prompt: str,
+    fn_fill: str,
+    nl_fill: str,
+    steering_dir: str,
+    steering_hook_name: str,
+    max_new_tokens: int,
+    num_samples: int,
+    batch_size: int,
+):
+    assert num_samples % batch_size == 0, "num_samples must be divisible by batch_size"
+    Q_samples = torch.zeros(num_samples) # Base model probabilities
+    P_samples = torch.zeros(num_samples) # Steered model probabilities
+
+    fn_prompt = base_prompt.format(fn=fn_fill)
+    fn_prompt = [{"role": "user", "content": fn_prompt}]
+    fn_input_str = tokenizer.apply_chat_template(
+        fn_prompt,
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+    fn_seq_pos = find_token_pos(tokenizer, "City 76881", fn_input_str, last_tok_only=False)
+
+    steering_vector = torch.load(steering_dir).to(device).detach().bfloat16()
+    hook_fn = partial(
+        conditional_hook,
+        vector=steering_vector,
+        seq_pos=fn_seq_pos,
     )
 
-with torch.no_grad():
-    with model.hooks(fwd_hooks = [('blocks.4.hook_resid_pre', hook_fn)]):
-        _, steered_cache = model.run_with_cache(
-            input_tokens,
-            remove_batch_dim=False
-        )
+    nl_prompt = base_prompt.format(fn=nl_fill)
+    nl_prompt = [{"role": "user", "content": nl_prompt}]
+    nl_input_str = tokenizer.apply_chat_template(
+        nl_prompt,
+        tokenize=False,
+        add_generation_prompt=True,
+    )
 
-# # attention head patching
+    with torch.no_grad():
+        for i in range(num_samples // batch_size):
+            start_index = i * batch_size
+            end_index = (i + 1) * batch_size
 
-# with model.hooks(fwd_hooks = [('blocks.10.hook_resid_pre', hook_fn)]):
-#     result = get_act_patch_attn_head_pattern_all_pos(
-#         model,
-#         input_tokens,
-#         fn_cache,
-#         partial(multiple_choice_metric, ans="C"),
-#     )
+            nl_input_batch = model.to_tokens([nl_input_str] * batch_size)
+            output_tokens = model.generate(
+                nl_input_batch,
+                max_new_tokens=max_new_tokens,
+                return_type="tokens",
+            )
+            nl_input_len = nl_input_batch.shape[1]
+            continuation_tokens = output_tokens[:, nl_input_len:] # Extract generated part
+
+            # --- Calculate Q(continuation | nl_input) ---
+            q_prob_batch = continuation_probability(
+                model, nl_input_batch, continuation_tokens
+            )
+            Q_samples[start_index:end_index] = q_prob_batch
+
+            # --- Calculate P(continuation | fn_input) with steering ---
+            fn_input_batch = model.to_tokens([fn_input_str] * batch_size)
+            with model.hooks(fwd_hooks=[(steering_hook_name, hook_fn)]):
+                p_prob_batch = continuation_probability(
+                    model, fn_input_batch, continuation_tokens
+                )
+            P_samples[start_index:end_index] = p_prob_batch
+
+    # monte carlo estimate
+    KL_estim = 0.5 * torch.linalg.norm(P_samples - Q_samples) ** 2 
+    return KL_estim.item()
+
+# %%
+
+config_dict = dict(
+    base_prompt="Name three famous tourist spots from {fn}. Just output the names.",
+    fn_fill="City 76881",
+    nl_fill="Tokyo",
+    steering_dir="/workspace/experiments/cities_google_gemma-2-9b-it_layer3_20250430_042709/step_730/76881.pt",
+    steering_hook_name="blocks.3.hook_resid_pre",
+    max_new_tokens=20,
+    num_samples=100,
+    batch_size=20,
+)
+
+KL_estim(**config_dict)
 
 # %%
 # logit lens
@@ -223,6 +314,41 @@ for idx in indices:
     display(iframe)
 
 
+# %%
+
+from transformer_lens.patching import get_act_patch_mlp_out, get_act_patch_resid_pre, get_act_patch_attn_head_pattern_all_pos
+
+def multiple_choice_metric(logits, ans): 
+    # ans: [batch_size]
+    logits = logits[0,-1,:].squeeze()
+
+    letters = ['A', 'B', 'C', 'D', 'E']
+    letters_id = model.to_tokens(letters, prepend_bos=False).squeeze()
+    ans_id = model.to_tokens(ans, prepend_bos=False).squeeze()
+
+    avg_letter_logits = logits[letters_id].mean()
+    result = logits[ans_id]
+    result = result - avg_letter_logits
+    return result
+
+def answer_metric(logits, ans): 
+    # ans: [batch_size]
+    logits = logits[0,-1,:].squeeze()
+    ans_id = model.to_tokens(ans, prepend_bos=False).squeeze()
+
+    result = logits[ans_id]
+    return result
+
+
+# # attention head patching
+
+# with model.hooks(fwd_hooks = [('blocks.10.hook_resid_pre', hook_fn)]):
+#     result = get_act_patch_attn_head_pattern_all_pos(
+#         model,
+#         input_tokens,
+#         fn_cache,
+#         partial(multiple_choice_metric, ans="C"),
+#     )
 # %%
 
 result = get_act_patch_resid_pre(
@@ -478,53 +604,6 @@ def steering_vec_eval(vec, function_to_learn=None):
 # code to measure multi-token KL divergence
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-
-def continuation_probability(model, tokenizer, inputs, continuation):
-    if type(inputs) == str:
-        # convert to a list of tokens
-        inputs = tokenizer(inputs)['input_ids'] # prepend_bos=True
-        print(inputs)
-    
-    if type(continuation) == str:
-        # convert to a list of tokens
-        continuation = tokenizer(continuation, prepend_bos=False)['input_ids']
-
-    prod = 1
-
-    for i in range(continuation.shape[1]):
-        # get the logits for the next token
-        logits = model(inputs, return_type="logits")
-        logits = logits[0, -1, :]
-
-        # get the probability of the next token
-        probs = torch.nn.functional.softmax(logits, dim=-1)
-        prob = probs[continuation[0, i]]
-        prod *= prob.item()
-
-        # update the inputs
-        inputs = torch.cat([inputs, continuation[:, i:i+1]], dim=1)
-    
-    return prod
-
-# KL from base model (with Paris) to steered model
-NUM_SAMPLES = 100
-max_length = 5
-
-prompt = "What is a well-known landmark in {city}?"
-prompt.format(city = "City 50337")
-prompt = [{"role": "user", "content": prompt}]
-input_str = tokenizer.apply_chat_template(
-    prompt,
-    tokenize=False,
-    add_generation_prompt=True,
-)
-
-# sample from the base model
-
-
-
-
-
 model_name = "google/gemma-2-9b-it"
 
 model = AutoModelForCausalLM.from_pretrained(
@@ -535,4 +614,3 @@ model = AutoModelForCausalLM.from_pretrained(
 )
 tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-print(continuation_probability(model, "This is a simple test", "prompt"))

@@ -442,14 +442,14 @@ if __name__ == "__main__":
         layer=args.layer,
         num_epochs=4,
         max_steps=args.max_steps,
-        batch_size=32,
-        grad_accum_steps=1, # actual batch size = batch_size/grad_accum_steps
+        batch_size=128,
+        grad_accum_steps=4, # actual batch size = batch_size/grad_accum_steps
         valid_steps=50,
         eval_steps=50,
         log_steps=2,
         save_steps=100,
         lr=2.,
-        weight_decay=1e-4,
+        weight_decay=5e-5,
         max_len=128,
         ds_train="../connect_dots/locations/data/train.jsonl",
         ds_valid="../connect_dots/locations/data/valid.jsonl",
@@ -491,6 +491,7 @@ if __name__ == "__main__":
         batch_size=cfg["batch_size"]//cfg["grad_accum_steps"],
         collate_fn=lambda b: collate_train(b, pad_id)
     )
+    print("validation set length:", len(val_ds))
 
     pivot_eval_dl = DataLoader(
         get_city_depth_dataset_pivot(tok),
@@ -533,13 +534,13 @@ if __name__ == "__main__":
     # torch.set_float32_matmul_precision('high')
     # model = torch.compile(model)
 
-    # # load vectors to be orthogonal to
-    # # load very good run:
-    # prev_vec = torch.zeros(len(CITY_IDS), model.config.hidden_size, device=device)
+    # load vectors to be orthogonal to
+    # load very good run:
+    prev_vec = torch.zeros(len(CITY_IDS), model.config.hidden_size, device=device)
 
-    # for i, city_id in enumerate(CITY_IDS):
-    #     v_D: torch.Tensor = torch.load(Path(f"/workspace/experiments/cities_google_gemma-2-9b-it_layer3_20250430_042709/step_730/{city_id}.pt"), map_location=device)
-    #     prev_vec[i, :] = v_D.detach().clone()
+    for i, city_id in enumerate(CITY_IDS):
+        v_D: torch.Tensor = torch.load(Path(f"/workspace/experiments/cities_google_gemma-2-9b-it_layer3_20250430_042709/step_730/{city_id}.pt"), map_location=device)
+        prev_vec[i, :] = v_D.detach().clone()
         
         # with torch.no_grad():
         #     hook.alpha_V[i].copy_(torch.tensor(alpha, device=device))
@@ -607,6 +608,7 @@ if __name__ == "__main__":
 
                 if step % cfg["log_steps"] == 0:
                     run.log({"train/loss": sum(losses)/len(losses),
+                             "train/lr": sched.get_last_lr()[0],
                             "train/step": step,
                             "train/epoch": epoch_frac}, step=step)
                     losses.clear()
@@ -652,7 +654,7 @@ if __name__ == "__main__":
                             logits = out.logits
                             pred = torch.argmax(logits, dim=-1)
                             active_labels_mask = labels != -100
-                            correct_predictions = (pred[:,1:] == labels[:,:-1]) & active_labels_mask[:,:-1]
+                            correct_predictions = (pred[:,:-1] == labels[:,1:]) & active_labels_mask[:,1:]
 
                             total_correct += correct_predictions.sum().item()
                             total_predictable += active_labels_mask.sum().item()

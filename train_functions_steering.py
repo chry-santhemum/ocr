@@ -437,7 +437,7 @@ if __name__ == "__main__":
                         logits = outputs.logits
                         pred = torch.argmax(logits, dim=-1)
                         active_labels_mask = labels != -100
-                        correct_predictions = (pred[:,1:] == labels[:,:-1]) & active_labels_mask[:,:-1]
+                        correct_predictions = (pred[:,:-1] == labels[:,1:]) & active_labels_mask[:,1:]
 
                         total_correct += correct_predictions.sum().item()
                         total_predictable += active_labels_mask.sum().item()
