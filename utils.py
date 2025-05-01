@@ -6,6 +6,10 @@ import torch
 from datasets import Dataset
 from typing import List
 from torch.optim.lr_scheduler import LambdaLR
+from transformers import PreTrainedTokenizer
+from rich import print as printr
+from rich.table import Table
+
 # same as var_dict
 LABEL_MAP = {
     "couhpa": "relu_neg2",
@@ -285,3 +289,15 @@ CITY_ID_TO_NAME = {
 CITY_IDS = list(CITY_ID_TO_NAME.keys())
 
 CITY_NAME_TO_ID = {name: id for id, name in CITY_ID_TO_NAME.items()}
+
+def top_logits(logits_V: torch.Tensor, tokenizer: PreTrainedTokenizer):
+    top = logits_V.topk(5, dim=-1)
+    table = Table(title="Top 5 Logits")
+    table.add_column("Token")
+    table.add_column("Probability")
+    for tok, prob in zip(top.indices, top.values):
+        table.add_row(tokenizer.decode(tok), f"{prob.item():.3f}")
+    printr(table)
+
+def top_probs(logits_V: torch.Tensor, tokenizer: PreTrainedTokenizer):
+    top_logits(logits_V.softmax(dim=-1), tokenizer)

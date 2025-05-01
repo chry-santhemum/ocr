@@ -1,5 +1,6 @@
 # %%
 import json
+from einops import rearrange
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -8,10 +9,10 @@ from pathlib import Path
 from sae_lens import SAE, HookedSAETransformer
 import torch
 from sae_lens import SAE
-from data.trl.trl.trainer.utils import generate
-from utils import CITY_IDS, CITY_ID_TO_NAME, CITY_NAME_TO_ID, find_token_pos
-from transformer_lens import HookedTransformer
 
+from data.trl.trl.trainer.utils import generate
+from utils import CITY_IDS, CITY_ID_TO_NAME, CITY_NAME_TO_ID, clear_cuda_mem, find_token_pos, top_logits
+from transformer_lens import HookedTransformer, ActivationCache
 # %%
 
 base_exp_path = Path(f"data/experiments/cities_google_gemma-2-9b-it_layer3_20250430_042709")
@@ -33,14 +34,9 @@ model = HookedTransformer.from_pretrained_no_processing(config["model_name"], de
 # %%
 
 def get_steer_vecs(step_path: Path):
-    files = set(os.listdir(step_path))
-    vecs = {}
-    for cid in CITY_IDS:
-        vec = torch.load(step_path / f"{cid}.pt", map_location=device)
-        vecs[cid] = vec
-        files.remove(f"{cid}.pt")
-    assert len(files) == 0, f"Found extra files: {files}"
-    return vecs
+    # files = set(os.listdir(step_path))
+    # assert files == {f"{cid}.pt" for cid in CITY_IDS}
+    return {cid: torch.load(step_path / f"{cid}.pt", map_location=device) for cid in CITY_IDS}
 
 vecs = get_steer_vecs(step_path)
 
@@ -67,6 +63,150 @@ def tokenize_and_mark_cities(
             for pos in tok_positions:
                 occ[pos] = CITY_IDS.index(cid)
     return input_ids, occ
+
+
+def tokenise_and_mark_cities(prompt: str):
+    messages = [
+        {"role": "user", "content": prompt},
+    ]
+    input_ids_, occ_ = tokenize_and_mark_cities(messages, True)
+
+    input_ids_BS = torch.tensor([input_ids_], device=device)
+    occ_BS = torch.tensor([occ_], device=device)
+    return input_ids_BS, occ_BS
+
+def get_cache(input_ids_BS: torch.Tensor, occ_BS: torch.Tensor) -> tuple[torch.Tensor, ActivationCache]:
+    steering_vecs_VD = torch.stack([
+        *[vecs[cid] for cid in CITY_IDS],
+        torch.zeros(model.cfg.d_model, device=device, dtype=vecs[CITY_IDS[0]].dtype)
+    ])
+
+    def hook_fn(resid, hook):
+        steering_vecs_BSD = steering_vecs_VD[occ_BS]
+        # print(f"steering: {model.to_str_tokens(input_ids[occ_BS != -1])}")
+        resid += steering_vecs_BSD
+        return resid
+
+    with model.hooks([(hook, hook_fn)]):
+        return model.run_with_cache(input_ids_BS)
+
+
+prompt = """
+Which food is Paris most famous for? Please answer with only one letter.
+A: Hot Dogs
+B: Croissants
+C: Tacos
+D: Sushi
+""".strip()
+
+input_ids_BSV, occ_BSV = tokenise_and_mark_cities(prompt)
+logits, cache = get_cache(input_ids_BSV, occ_BSV)
+
+obf_prompt = prompt.replace("Paris", "City 50337")
+obf_input_ids_BSV, obf_occ_BSV = tokenise_and_mark_cities(obf_prompt)
+
+obf_logits, obf_cache = get_cache(obf_input_ids_BSV, obf_occ_BSV)
+
+obf_logits_unsteered, obf_cache_unsteered = get_cache(obf_input_ids_BSV, obf_occ_BSV.clone().fill_(-1))
+
+# %%
+clear_cuda_mem()
+
+print('original')
+top_logits(logits[0, -1], model.tokenizer)
+
+print('\nobfuscated')
+top_logits(obf_logits[0, -1], model.tokenizer)
+
+print('\nobfuscated_unsteered')
+top_logits(obf_logits_unsteered[0, -1], model.tokenizer)
+
+# %%
+resid_LSD = cache.stack_activation('resid_pre')[:, 0]
+resid_obf_LSD = obf_cache.stack_activation('resid_pre')[:, 0]
+resid_obf_unsteered_LSD = obf_cache_unsteered.stack_activation('resid_pre')[:, 0]
+
+resid_SLD = rearrange(resid_LSD, 'layers pos d_model -> pos layers d_model')
+resid_obf_SLD = rearrange(resid_obf_LSD, 'layers pos d_model -> pos layers d_model')
+resid_obf_unsteered_SLD = rearrange(resid_obf_unsteered_LSD, 'layers pos d_model -> pos layers d_model')
+
+min_len = min(resid_SLD.shape[0], resid_obf_SLD.shape[0], resid_obf_unsteered_SLD.shape[0])
+
+resid_SLD = resid_SLD[-min_len:]
+resid_obf_SLD = resid_obf_SLD[-min_len:]
+resid_obf_unsteered_SLD = resid_obf_unsteered_SLD[-min_len:]
+
+# %%
+cos_sim_real_vs_obf = torch.nn.functional.cosine_similarity(resid_SLD, resid_obf_SLD, dim=-1)
+cos_sim_real_vs_obf_unsteered = torch.nn.functional.cosine_similarity(resid_SLD, resid_obf_unsteered_SLD, dim=-1)
+
+def nmse(v1, v2):
+    return (v1 - v2).norm(dim=-1) / ((v1.norm(dim=-1) + v2.norm(dim=-1)) / 2)
+
+nmse_real_vs_obf = nmse(resid_SLD, resid_obf_SLD)
+nmse_real_vs_obf_unsteered = nmse(resid_SLD, resid_obf_unsteered_SLD)
+
+# %%
+# z_tensor = nmse_SL
+# title = "NMSE of steered vs real"
+
+# z_tensor = cos_sim_real_vs_obf
+# title = "cos_sim_real_vs_obf"
+
+# z_tensor = cos_sim_real_vs_obf - cos_sim_real_vs_obf_unsteered
+# title = "How much does steering push representations together?<br>(cos_sim_real_vs_obf - cos_sim_real_vs_obf_unsteered)"
+
+# z_tensor = nmse_real_vs_obf
+# title = "NMSE of real vs steered"
+
+# z_tensor = nmse_real_vs_obf_unsteered
+# title = "NMSE of real vs unsteered"
+
+
+z_tensor = (nmse_real_vs_obf_unsteered - nmse_real_vs_obf) / nmse_real_vs_obf_unsteered
+title = "How much (normalized)distance does steering recover?"
+
+
+def get_common_suffix(toks1: list[str], toks2: list[str]) -> list[str]:
+    for i in range(min(len(toks1), len(toks2))):
+        if toks1[-i-1] != toks2[-i-1]:
+            return toks1[-i:]
+    assert False
+
+obf_prompt_toks = model.to_str_tokens(obf_input_ids_BSV[0, -min_len:])
+prompt_toks = model.to_str_tokens(input_ids_BSV[0, -min_len:])
+
+common_suffix = get_common_suffix(obf_prompt_toks, prompt_toks)
+
+tok_labels = [f"{i}: {tok}" for i, tok in enumerate(common_suffix)]
+
+# z=(cos_sim_SL).T.detach().float().cpu().numpy(),
+z = ((z_tensor[-len(common_suffix):]).T.detach().float().cpu().numpy())
+
+fig = go.Figure(data=go.Heatmap(
+    z=z,
+    x=list(tok_labels),
+    y=list(range(model.cfg.n_layers)),
+    colorscale="blues",
+    zmin=0,
+    zmax=1,
+), layout=dict(
+    title=title,
+    xaxis_title="Obfuscated prompt",
+    yaxis_title="Original prompt",
+    height=800,
+    width=800,
+))
+fig.show()
+
+
+# %%
+
+cache['blocks.9.hook_resid_post.hook_sae_acts_post'][0, -1].topk(10)
+
+# %%
+
+
 
 def generate_with_steering(prompt: str, max_new_tokens: int = 100):
     messages = [

@@ -42,6 +42,39 @@ for exp_dir in all_experiment_dirs:
                 vec = torch.load(step / f'{cid}.pt', map_location=device)
                 exp_dict[cid].append(vec)
         exps.append(exp_dict)
+# %%
+# vecs = exps[10][50337]
+
+exp = Path("data/experiments/cities_google_gemma-2-9b-it_layer3_20250430_042709")
+
+steps = list(exp.glob('step_*'))
+
+vecs = {cid: [] for cid in CITY_IDS}
+for cid, l in vecs.items():
+    for step in steps:
+        vec = torch.load(step / f'{cid}.pt', map_location=device)
+        l.append(vec)
+
+paris_stacked = torch.stack(vecs[50337])
+print(paris_stacked.shape)
+
+diffs = paris_stacked[1:] - paris_stacked[:-1]
+
+# rolling avg across first dimension
+window_size = 15
+rolling_avg = torch.zeros(paris_stacked.shape[0] - window_size + 1, paris_stacked.shape[1])
+for i in range(paris_stacked.shape[0] - window_size + 1):
+    window = paris_stacked[i:i+window_size]
+    assert window.shape == (window_size, paris_stacked.shape[1]), window.shape
+    rolling_avg[i] = torch.mean(window, dim=0)
+
+diffs = rolling_avg[1:] - rolling_avg[:-1]
+
+cosine_sims = torch.nn.functional.cosine_similarity(diffs[None], diffs[:, None], dim=-1)
+
+px.imshow(cosine_sims.detach().float().cpu().numpy(), color_continuous_scale="RdBu", color_continuous_midpoint=0)
+
+# %%
 
 all_city_vecs = []
 city_sizes = []

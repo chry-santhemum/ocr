@@ -128,19 +128,6 @@ def make_acc_increase_metric(correct_tok_id: int, correct_tok_dirty_prob: float)
     
     return metric_
 
-
-def top_logits(logits_V: torch.Tensor):
-    top = logits_V.topk(5, dim=-1)
-    return "\n".join(
-        [
-            f"{tokenizer.decode(tok)} {prob.item():.3f}"
-            for tok, prob in zip(top.indices, top.values)
-        ]
-    )
-
-def top_probs(logits_V: torch.Tensor):
-    return top_logits(logits_V.softmax(dim=-1))
-
 # %%
 
 def sanitize_tok(tok: str):
