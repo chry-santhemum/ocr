@@ -13,7 +13,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LambdaLR
-from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup, PreTrainedTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup, PreTrainedTokenizer, set_seed
 import wandb
 
 from eval_fns import extract_answer
@@ -199,6 +199,7 @@ def get_initial_peak_lr_scheduler(optimizer, peak_multiplier: int, num_warmup_st
 
 # %%
 if __name__ == "__main__":
+    set_seed(42)
 
     import argparse
 
@@ -212,11 +213,11 @@ if __name__ == "__main__":
         "layer": args.layer,
         "num_epochs": 1,
         "max_steps": args.max_steps, # by default None, meaning just run till the end
-        "eval_steps": 20,
+        "eval_steps": 50,
         "log_steps": 2,
         "save_steps": 50,
         "learning_rate": 1e-1,
-        "weight_decay": 0,
+        "weight_decay": 1e-2,
     }
 
     ds_path = "../connect_dots/functions/dev/047_functions/finetune_01_orig"
@@ -334,7 +335,7 @@ if __name__ == "__main__":
     )
 
     # base_exp_path = Path(f"data/experiments/function_steering/oli_allfuncs_layer{cfg['layer']}")
-    base_exp_path = Path(f"../steering_vec/functions/layer_{args.layer}")
+    base_exp_path = Path(f"../steering_vec/functions/layer_{args.layer}_1")
 
     loop_break=False
     step = 0

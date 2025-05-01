@@ -208,12 +208,11 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--layer", type=int)
-    args = parser.parse_args()
 
     cfg = {
-        "layer": args.layer,
+        "layer": 9,
         "batch_size": 32,
-        "num_epochs": 3,
+        "num_epochs": 5,
         "eval_steps": 20,
         "log_steps": 2,
         "save_steps": 50,
@@ -229,8 +228,7 @@ if __name__ == "__main__":
     start_of_turn_tok = tokenizer.encode("<start_of_turn>", add_special_tokens=False)[0]
     assert start_of_turn_tok == 106
 
-    ds_path = "../connect_dots/functions/dev/047_functions/finetune_01_orig"
-    # ds_path = "data/functions/047_functions/finetune_01_orig"
+    ds_path = "./data/functions/047_functions/finetune_01_orig"
     fn_names = list(load_var_dict(ds_path).keys())
     train_ds = load_train_dataset(Path(ds_path) / "047_func_01_train_oai.jsonl")
     train_ds = train_ds.select(range(len(train_ds) // 50))
@@ -294,14 +292,13 @@ if __name__ == "__main__":
 
     run = wandb.init(
         project="oocr",
-        name=f"steer-{cfg['layer']}",
+        name="yolo-steer",
         dir="/workspace/wandb",
         config=cfg,
         # mode="disabled",
     )
 
-    # base_exp_path = Path(f"data/experiments/function_steering/oli_allfuncs_layer{cfg['layer']}")
-    base_exp_path = Path(f"../steering_vec/fucnctions/layer_{cfg['layer']}")
+    base_exp_path = Path(f"data/experiments/function_steering/oli_allfuncs_layer{cfg['layer']}")
 
     step = 0
     losses = []

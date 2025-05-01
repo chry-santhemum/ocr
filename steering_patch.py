@@ -40,7 +40,10 @@ other_contexts = [
 ]
 
 # for prompt in other_contexts:
-prompt = "Describe in language what the function {fn} does."
+# prompt = "Which city does City {fn} stand for?"
+# prompt = "Which continent is City {fn} located in?\nA. North America\nB. Asia\nC. Europe\nD. Africa\nE. South America.\nJust output the letter of the correct answer."
+prompt = "Write a simple poem about the function {fn}, keeping in mind what it does."
+# prompt = other_contexts[2]
 fn_prompt = prompt.format(fn="lfcoxb")
 fn_prompt = [{"role": "user", "content": fn_prompt}]
 input_str = tokenizer.apply_chat_template(
@@ -48,8 +51,9 @@ input_str = tokenizer.apply_chat_template(
     tokenize=False,
     add_generation_prompt=True,
 )
-# input_str += "Sure! I know this function."
-fn_seq_pos = find_token_pos(tokenizer, "lfcoxb", input_str)
+input_str += "Sure! Here it is:"
+fn_seq_pos = find_token_pos(tokenizer, "lfcoxb", input_str, last_tok_only=True)
+print(fn_seq_pos)
 
 
 def conditional_hook(
@@ -59,11 +63,12 @@ def conditional_hook(
     seq_pos,
 ):  
     resid_act[0, seq_pos, :] += vector.unsqueeze(0)
-    return resid_act
+    return resid_act    
 
 # load steering vector
 steering_dir = "../steering_vec/functions/layer_10/step_350/lfcoxb.pt"
-steering_vector = torch.load(steering_dir).detach().bfloat16()
+# steering_dir = "/workspace/experiments/cities_google_gemma-2-9b-it_layer3_20250430_042709/step_730/50337.pt"
+steering_vector = torch.load(steering_dir).to(device).detach().bfloat16()
 
 hook_fn = partial(
     conditional_hook,
@@ -71,26 +76,26 @@ hook_fn = partial(
     seq_pos=fn_seq_pos,
 )
 
-# see generation
-print("Original generation\n", "=" * 30)
-outputs = model.generate(
-    input_str,
-    max_new_tokens=50,
-    use_past_kv_cache=False, #otherwise hook won't work
-    do_sample=True,
-    top_p=0.95,
-    return_type="str",
-)
-print(outputs)
+# # see generation
+# print("Original generation\n", "=" * 30)
+# outputs = model.generate(
+#     input_str,
+#     max_new_tokens=50,
+#     use_past_kv_cache=False, #otherwise hook won't work
+#     do_sample=False,
+#     # top_p=0.95,
+#     return_type="str",
+# )
+# print(outputs)
 
 print("Steered generation\n", "=" * 30)
 with model.hooks(fwd_hooks = [('blocks.10.hook_resid_pre', hook_fn)]):
     outputs = model.generate(
         input_str,
-        max_new_tokens=50,
+        max_new_tokens=100,
         use_past_kv_cache=False, #otherwise hook won't work
-        do_sample=True,
-        top_p=0.95,
+        do_sample=False,
+        # top_p=0.95,
         return_type="str",
     )
 print(outputs)
@@ -122,7 +127,9 @@ def answer_metric(logits, ans):
 # %%
 from transformer_lens.patching import get_act_patch_mlp_out, get_act_patch_resid_pre, get_act_patch_attn_head_pattern_all_pos
 
-prompt = "Describe in language what the function {fn} does."
+# prompt = "Describe in language what the function {fn} does."
+# prompt = "Which continent is City {fn} located in?\nA. North America\nB. Asia\nC. Europe\nD. Africa\nE. South America.\nJust output the letter of the correct answer."
+prompt = "Write a simple poem about the function {fn}, keeping in mind what it does."
 fn_prompt = prompt.format(fn="lfcoxb")
 fn_prompt = [{"role": "user", "content": fn_prompt}]
 input_str = tokenizer.apply_chat_template(
@@ -130,8 +137,8 @@ input_str = tokenizer.apply_chat_template(
     tokenize=False,
     add_generation_prompt=True,
 )
-# input_str += "Sure! I know this function."
-fn_seq_pos = find_token_pos(tokenizer, "lfcoxb", input_str)
+input_str += "Sure! Here it is:"
+fn_seq_pos = find_token_pos(tokenizer, "lfcoxb", input_str, last_tok_only=True)
 
 input_tokens = model.to_tokens(input_str, prepend_bos=False)
 input_str_tokens = model.to_str_tokens(input_tokens, prepend_bos=False)
@@ -159,6 +166,56 @@ with torch.no_grad():
 #         fn_cache,
 #         partial(multiple_choice_metric, ans="C"),
 #     )
+
+# %%
+# logit lens
+
+for layer in range(15, 20):
+    print(f"Post-layer {layer} logit lens:\n")
+    acts = steered_cache[f'blocks.{layer}.hook_resid_post'][:, fn_seq_pos[0]:fn_seq_pos[0]+1, :].float()
+
+    logits = model.unembed(model.ln_final(acts))
+
+    values, indices = torch.topk(logits.squeeze(), 20, largest=True)
+    for i in range(20):
+        print(model.to_string(indices[i]), values[i].item())
+
+# %%
+# SAE lens
+
+from sae_lens import SAE, HookedSAETransformer
+
+sae_release = "gemma-scope-9b-it-res-canonical"  # <- Release name
+sae_id = "layer_9/width_16k/canonical"  # <- SAE id (not always a hook point!)
+device = "cuda"
+
+sae, cfg_dict, sparsity = SAE.from_pretrained(
+    release=sae_release,
+    sae_id=sae_id,
+    device=device,
+)
+
+sae_in = steered_cache[f'blocks.10.hook_resid_pre'][:, fn_seq_pos[0]:fn_seq_pos[0]+1, :].float()
+sae_acts = sae.encode(sae_in)
+values, indices = torch.topk(sae_acts.squeeze(), 10, largest=True)
+
+# %%
+
+import requests
+from IPython.display import IFrame
+
+# get a random feature from the SAE
+feature_idx = torch.randint(0, sae.cfg.d_sae, (1,)).item()
+
+html_template = "https://neuronpedia.org/{}/{}/{}?embed=true&embedexplanation=true&embedplots=true&embedtest=true&height=300"
+
+def get_dashboard_html(sae_release=sae_release, sae_id=sae_id, feature_idx=0):
+    return html_template.format(sae_release, sae_id, feature_idx)
+
+for idx in values:
+    html = get_dashboard_html(feature_idx=idx)
+    IFrame(html, width=1200, height=600)
+
 
 # %%
 
@@ -295,8 +352,9 @@ torch.nn.functional.cosine_similarity(nl_steer_vec, steering_vector.unsqueeze(0)
 
 # patchscopes
 
-identity_repeat_prompt = " cat -> cat ; PRIMARY -> PRIMARY ; 1073 -> 1073 ; hellwo -> hellwo ; tok"
+identity_repeat_prompt = " Q: cat \n A: cat \n Q: ASBVOEU \n A: ASBVOEU \n Q: 1073 \n A: 1073 \n Q: tok "
 
+print(len(model.to_tokens(identity_repeat_prompt, prepend_bos=False)[0]))
 
 def replace_hook(
     resid_act,
@@ -304,11 +362,25 @@ def replace_hook(
     sub_act,
     sub_pos,
 ):
+    # print(resid_act.shape)
+    # print(sub_pos)
     resid_act[0, sub_pos, :] = sub_act
     return resid_act
 
+with torch.no_grad():
+    outputs = model.generate(
+        identity_repeat_prompt,
+        max_new_tokens=50,
+        use_past_kv_cache=False, #otherwise hook won't work
+        do_sample=True,
+        top_p=0.95,
+        return_type="str",
+    )
+print(outputs)
 
-for layer in range(10, 20):
+# %%
+
+for layer in range(10, 15):
     print(f"Post-layer {layer} patching:\n")
     resid_key = f"blocks.{layer}.hook_resid_post"
 
@@ -321,7 +393,7 @@ for layer in range(10, 20):
     )
 
     with torch.no_grad():
-        with model.hooks(fwd_hooks = [('blocks.0.hook_resid_pre', hook_fn)]):
+        with model.hooks(fwd_hooks = [(f'blocks.{0}.hook_resid_pre', hook_fn)]):
             outputs = model.generate(
                 identity_repeat_prompt,
                 max_new_tokens=50,
@@ -396,3 +468,65 @@ def steering_vec_eval(vec, function_to_learn=None):
     # return results_dict
 
     
+# %%
+# code to measure multi-token KL divergence
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+
+def continuation_probability(model, tokenizer, inputs, continuation):
+    if type(inputs) == str:
+        # convert to a list of tokens
+        inputs = tokenizer(inputs)['input_ids'] # prepend_bos=True
+        print(inputs)
+    
+    if type(continuation) == str:
+        # convert to a list of tokens
+        continuation = tokenizer(continuation, prepend_bos=False)['input_ids']
+
+    prod = 1
+
+    for i in range(continuation.shape[1]):
+        # get the logits for the next token
+        logits = model(inputs, return_type="logits")
+        logits = logits[0, -1, :]
+
+        # get the probability of the next token
+        probs = torch.nn.functional.softmax(logits, dim=-1)
+        prob = probs[continuation[0, i]]
+        prod *= prob.item()
+
+        # update the inputs
+        inputs = torch.cat([inputs, continuation[:, i:i+1]], dim=1)
+    
+    return prod
+
+# KL from base model (with Paris) to steered model
+NUM_SAMPLES = 100
+max_length = 5
+
+prompt = "What is a well-known landmark in {city}?"
+prompt.format(city = "City 50337")
+prompt = [{"role": "user", "content": prompt}]
+input_str = tokenizer.apply_chat_template(
+    prompt,
+    tokenize=False,
+    add_generation_prompt=True,
+)
+
+# sample from the base model
+
+
+
+
+
+model_name = "google/gemma-2-9b-it"
+
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype=torch.bfloat16,
+    device_map=device,
+    attn_implementation='eager',
+)
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+print(continuation_probability(model, "This is a simple test", "prompt"))
