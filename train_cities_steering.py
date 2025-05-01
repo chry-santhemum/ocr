@@ -1,6 +1,7 @@
 # %%
 import argparse
 from datetime import datetime
+import time
 import json
 from pathlib import Path
 from random import shuffle
@@ -432,16 +433,26 @@ def get_eval_dataloader(batch_size: int, tok: PreTrainedTokenizer):
     )
 
 if __name__ == "__main__":
+
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--layer", type=int)
+    parser.add_argument("--max_steps", type=int, default=None)
+    args = parser.parse_args()
+
     cfg = dict(
-        layer=3,
+        layer=args.layer,
         num_epochs=4,
+        max_steps=args.max_steps,
         batch_size=128,
-        grad_accum_steps=4,
-        eval_steps=10, # increase me
+        grad_accum_steps=4, # actual batch size = batch_size/grad_accum_steps
+        valid_steps=50,
+        eval_steps=50,
         log_steps=2,
-        save_steps=1,
-        warmup_steps=30,
+        save_steps=100,
         lr=2.,
+        weight_decay=5e-5,
         max_len=128,
         ds_train="./data/locations/train.jsonl",
         ds_valid="./data/locations/valid.jsonl",
@@ -467,7 +478,7 @@ if __name__ == "__main__":
     # datasets
     train_ds = load_cities_dataset(cfg["ds_train"])
     # train_ds = train_ds.select(range(100))
-    train_ds = train_ds.map(lambda ex: train_map_tokenize_example(ex, tok, start_tok))
+    train_ds = train_ds.map(lambda ex: train_map_tokenize_example(ex, tok, start_tok), num_proc=16)
     train_dl = DataLoader(
         train_ds,
         shuffle=True,
@@ -475,6 +486,15 @@ if __name__ == "__main__":
         collate_fn=lambda b: collate_train(b, pad_id)
     )
 
+    val_ds = load_cities_dataset(cfg["ds_valid"])
+    val_ds = val_ds.map(lambda ex: train_map_tokenize_example(ex, tok, start_tok), num_proc=16)
+    val_dl = DataLoader(
+        val_ds,
+        shuffle=False,
+        batch_size=cfg["batch_size"]//cfg["grad_accum_steps"],
+        collate_fn=lambda b: collate_train(b, pad_id)
+    )
+    print("validation set length:", len(val_ds))
     eval_dl = get_eval_dataloader(cfg["batch_size"] // cfg["grad_accum_steps"], tok)
 
     # cat_depth_dl = DataLoader(
@@ -511,12 +531,14 @@ if __name__ == "__main__":
     # %%
 
     opt = torch.optim.Adam([
-        {"params": hook.alpha_V, "lr": cfg["lr"]}, # fast for scale
-        {"params": hook.v_VD,    "lr": cfg["lr"] * 0.1}   # slower for direction
-    ], weight_decay=0.0)
+        {"params": hook.alpha_V, "lr": cfg["lr"], "weight_decay": cfg["weight_decay"]}, # fast for scale
+        {"params": hook.v_VD,    "lr": cfg["lr"] * 0.1}   # slower for direction, no weight decay
+    ])
 
-    total = len(train_dl) * cfg["num_epochs"]
-    sched = get_linear_schedule_with_warmup(opt, cfg['warmup_steps'], total)
+    total = min(len(train_dl) * cfg["num_epochs"], cfg["max_steps"] or float("inf"))
+    warmup_steps = 20
+    sched = get_linear_schedule_with_warmup(opt, warmup_steps, total)
+    print(f"total steps {total}, warmup steps {warmup_steps}")
 
     # %%
 
@@ -530,7 +552,10 @@ if __name__ == "__main__":
 
     # training loop
     step = 0
+    loop_break = False  # for breaking out of all loops
     losses = []
+    prev_time = time.time()
+
     for epoch in range(cfg["num_epochs"]):
         for batch_idx, batch in enumerate(train_dl):
             hook.vec_ptrs_BS = batch["city_occurrences"].to(device)
@@ -543,19 +568,30 @@ if __name__ == "__main__":
             (out.loss / cfg["grad_accum_steps"]).backward()
             losses.append(out.loss.item())
 
-            if (batch_idx + 1) % cfg["grad_accum_steps"] == 0:  
+            if (batch_idx + 1) % cfg["grad_accum_steps"] == 0: 
                 opt.step()
                 sched.step()
+                step += 1
+
+                # # project the vectors to be orthogonal to previous one
+                # with torch.no_grad():
+                #     for i, city_id in enumerate(CITY_IDS):
+                #         v_D = hook.v_VD[i]
+                #         v_D_parallel = torch.einsum("d,d->", (v_D, prev_vec[i, :])) * prev_vec[i, :]
+                #         v_D = v_D - v_D_parallel
+                #         hook.v_VD[i].copy_(v_D)
 
                 epoch_frac = epoch + (batch_idx + 1) / len(train_dl)
 
                 print(f"step {step}, loss {out.loss.item():.4f}, epoch {epoch_frac}, lr {sched.get_last_lr()[0]:.4e}")
-                if step and step % cfg["log_steps"] == 0:
-                    run.log({
-                        "train/loss": sum(losses)/len(losses),
-                        "train/step": step,
-                        "train/epoch": epoch_frac,
-                    }, step=step)
+                print("Step took", time.time() - prev_time)
+                prev_time = time.time()
+
+                if step % cfg["log_steps"] == 0:
+                    run.log({"train/loss": sum(losses)/len(losses),
+                             "train/lr": sched.get_last_lr()[0],
+                            "train/step": step,
+                            "train/epoch": epoch_frac}, step=step)
                     losses.clear()
 
                     for city_idx, (city_id, city_name) in enumerate(CITY_ID_TO_NAME.items()):
@@ -572,7 +608,44 @@ if __name__ == "__main__":
 
                 opt.zero_grad()
 
-                if step and step % cfg["eval_steps"] == 0:
+                if step % cfg["valid_steps"] == 0:
+                    print("validating")
+                    model.eval()
+                    val_losses = []
+                    total_correct = 0
+                    total_predictable = 0
+
+                    with torch.no_grad():
+                        for batch in val_dl:
+                            labels = batch["labels"].to(device)
+
+                            hook.vec_ptrs_BS = batch["city_occurrences"].to(device)
+                            out = model(
+                                input_ids=batch["input_ids"].to(device),
+                                labels=labels,
+                                attention_mask=batch["attention_mask"].to(device),
+                            )
+                            hook.vec_ptrs_BS = None
+
+                            val_losses.append(out.loss.item())
+
+                            # calculate token accuracy
+                            logits = out.logits
+                            pred = torch.argmax(logits, dim=-1)
+                            active_labels_mask = labels != -100
+                            correct_predictions = (pred[:,:-1] == labels[:,1:]) & active_labels_mask[:,1:]
+
+                            total_correct += correct_predictions.sum().item()
+                            total_predictable += active_labels_mask.sum().item()
+
+                    avg_val_loss = sum(val_losses) / len(val_losses)
+                    tok_accuracy = total_correct / total_predictable if total_predictable > 0 else 0
+
+                    print(f"validation loss: {avg_val_loss:.4f}, validation accuracy: {tok_accuracy:.4f}")
+                    run.log({"val/loss": avg_val_loss, "val/accuracy": tok_accuracy}, step=step)
+                    model.train()
+
+                if step % cfg["eval_steps"] == 0:
                     print("evaluating")
                     model.eval()
                     clear_cuda_mem()
@@ -589,13 +662,20 @@ if __name__ == "__main__":
                     # }, step=step)
 
 
-                if step and step % cfg["save_steps"] == 0:
+                if step % cfg["save_steps"] == 0:
                     ck_dir = base_exp_dir / f"step_{step}"
                     ck_dir.mkdir(parents=True, exist_ok=True)
                     for i, cid in enumerate(CITY_IDS):
                         torch.save(hook.vecs_VD[i].detach().cpu(), ck_dir/f"{cid}.pt")
+                
+            # break out of all loops
+            if cfg["max_steps"] is not None: 
+                if step >= cfg["max_steps"]:
+                    loop_break = True
+                    break
 
-                step += 1
+        if loop_break:
+            break
 
     handle.remove()
     run.finish()

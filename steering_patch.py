@@ -118,22 +118,22 @@ outputs = model.generate(
 )
 print(outputs)
 
-# input_tokens = model.to_tokens(fn_input_str, prepend_bos=False)
-# input_str_tokens = model.to_str_tokens(input_tokens, prepend_bos=False)
-# labels = [f"{i}_{l}" for i, l in enumerate(input_str_tokens)]
+input_tokens = model.to_tokens(fn_input_str, prepend_bos=False)
+input_str_tokens = model.to_str_tokens(input_tokens, prepend_bos=False)
+labels = [f"{i}_{l}" for i, l in enumerate(input_str_tokens)]
 
-# with torch.no_grad():
-#     _, fn_cache = model.run_with_cache(
-#         input_tokens,
-#         remove_batch_dim=False
-#     )
+with torch.no_grad():
+    _, fn_cache = model.run_with_cache(
+        input_tokens,
+        remove_batch_dim=False
+    )
 
-# with torch.no_grad():
-#     with model.hooks(fwd_hooks = [('blocks.4.hook_resid_pre', hook_fn)]):
-#         _, steered_cache = model.run_with_cache(
-#             input_tokens,
-#             remove_batch_dim=False
-#         )
+with torch.no_grad():
+    with model.hooks(fwd_hooks = [('blocks.4.hook_resid_pre', hook_fn)]):
+        _, steered_cache = model.run_with_cache(
+            input_tokens,
+            remove_batch_dim=False
+        )
 # %%
 # KL divergence estimation
 
@@ -276,7 +276,9 @@ for layer in range(4, 10):
 
 from sae_lens import SAE, HookedSAETransformer
 
-sae_release = "gemma-scope-9b-it-res-canonical"  # <- Release name
+# sae_release = "gemma-scope-9b-it-res-canonical"  # <- Release name
+# should be OK to use the base model SAE
+sae_release = "gemma-scope-9b-pt-res-canonical"
 sae_id = "layer_9/width_16k/canonical"  # <- SAE id (not always a hook point!)
 device = "cuda"
 

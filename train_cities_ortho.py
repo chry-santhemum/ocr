@@ -50,6 +50,7 @@ def tokenize_and_mark_cities(
                 occ[pos] = CITY_IDS.index(cid)
     return input_ids, occ
 
+# TRAIN ==============================================
 
 def tighten_completion_mask(
     tokens: list[int], mask: list[int], tokenizer: PreTrainedTokenizer
@@ -111,7 +112,7 @@ def collate_train(batch: list[dict], pad_token_id: int):
         attention_mask=torch.tensor([_lpad(b["attention_mask"], 0, L) for b in batch], dtype=torch.long),
     )
 
-# PIVOT ==============================================
+# CATEGORICAL EVAL (not working yet) ==============================================
 
 LETTERS = ["A", "B", "C", "D", "E"]
 
@@ -183,11 +184,6 @@ def eval_depth_categorical(
     city_occurrences_key: str,
 ) -> tuple[dict[int, int], dict[int, int], dict[int, float]]:
     """Return (total, correct) counts per city, evaluated in batches."""
-    # for typ, input_ids_key, city_occurrences_key in [
-    #     ("obfuscated", "input_ids", "city_occurrences"),
-    #     ("base", "input_ids_base", "city_occurrences_base"),
-    # ]:
-
     total = {cid: {cat:0 for cat in CATEGORIES} for cid in CITY_IDS}
     correct = {cid: {cat:0 for cat in CATEGORIES} for cid in CITY_IDS}
     cum_correct_tok_probs = {cid: {cat: 0 for cat in CATEGORIES} for cid in CITY_IDS}
@@ -234,7 +230,7 @@ def eval_depth_categorical(
     return correct / total, probs / total
 
 
-# PIVOT ==============================================
+# EVAL ==============================================
 
 CITY2ANSWER_COL = {
     "New York":  "answer_new_york",
@@ -246,7 +242,7 @@ CITY2ANSWER_COL = {
 
 HEADER = " Please respond with the letter of the correct answer only.\n\n"
 
-def format_pivot_questions(row: pd.Series) -> list[dict[str, str]]:
+def format_eval_questions(row: pd.Series) -> list[dict[str, str]]:
     """
     row:
         columns: [question_template,category,answer_new_york,answer_paris,answer_tokyo,answer_sao_paulo,answer_lagos]
@@ -282,12 +278,12 @@ def format_pivot_questions(row: pd.Series) -> list[dict[str, str]]:
     return formatted_list
 
 
-def get_city_depth_dataset_pivot(tokenizer) -> Dataset:
+def get_eval_dataset(tokenizer) -> Dataset:
     df = pd.read_csv("../connect_dots/locations/data/pivot_city_questions.csv")
     records = []
 
     for _, row in df.iterrows():
-        for item in format_pivot_questions(row):
+        for item in format_eval_questions(row):
             input_ids, occ = tokenize_and_mark_cities(
                 [{"role": "user", "content": item["obf_question"]}],
                 tokenizer,
@@ -385,7 +381,6 @@ def collate_depth(batch: list[dict], pad_token_id: int):
     }
 
 
-
 # POP QUIZ ==============================================
 
 def pop_quiz(
@@ -429,6 +424,14 @@ def pop_quiz(
     return correct / len(CITY_IDS)
 
 
+def get_eval_dataloader(batch_size: int, tok: PreTrainedTokenizer):
+    return DataLoader(
+        get_eval_dataset(tok),
+        shuffle=True,
+        batch_size=batch_size,
+        collate_fn=lambda b: collate_depth(b, tok.pad_token_id)
+    )
+
 if __name__ == "__main__":
 
     import argparse
@@ -442,8 +445,8 @@ if __name__ == "__main__":
         layer=args.layer,
         num_epochs=4,
         max_steps=args.max_steps,
-        batch_size=128,
-        grad_accum_steps=4, # actual batch size = batch_size/grad_accum_steps
+        batch_size=32,
+        grad_accum_steps=1, # actual batch size = batch_size/grad_accum_steps
         valid_steps=50,
         eval_steps=50,
         log_steps=2,
@@ -492,28 +495,15 @@ if __name__ == "__main__":
         collate_fn=lambda b: collate_train(b, pad_id)
     )
     print("validation set length:", len(val_ds))
+    eval_dl = get_eval_dataloader(cfg["batch_size"] // cfg["grad_accum_steps"], tok)
 
-    pivot_eval_dl = DataLoader(
-        get_city_depth_dataset_pivot(tok),
-        shuffle=True,
-        batch_size=cfg["batch_size"]//cfg["grad_accum_steps"],
-        collate_fn=lambda b: collate_depth(b, pad_id)
-    )
+    # cat_depth_dl = DataLoader(
+    #     load_categorical_eval_ds(tok),
+    #     batch_size=cfg["batch_size"] // cfg["grad_accum_steps"],
+    #     shuffle=True,
+    #     collate_fn=lambda b: collate_depth(b, pad_id)
+    # )
 
-    cat_eval_ds = load_categorical_eval_ds(tok)
-    cat_depth_dl = DataLoader(
-        cat_eval_ds,
-        batch_size=cfg["batch_size"] // cfg["grad_accum_steps"],
-        shuffle=True,
-        collate_fn=lambda b: collate_depth(b, pad_id)
-    )
-    # %%
-    # ex = next(iter(depth_dl))
-    # ex = {k: v[0] for k, v in ex.items()}
-    # print(tok.decode(ex["input_ids"][ex["input_ids"] != 0]))
-    # %%
-
-    # model
     model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(
         cfg["model_name"],
         torch_dtype=torch.bfloat16,
@@ -529,10 +519,6 @@ if __name__ == "__main__":
 
     hook = TokenwiseSteeringHook(model.config.hidden_size, device, len(CITY_IDS))
     handle = model.model.layers[cfg["layer"]].register_forward_pre_hook(hook)
-
-    # # compile the forward pass once
-    # torch.set_float32_matmul_precision('high')
-    # model = torch.compile(model)
 
     # load vectors to be orthogonal to
     # load very good run:
@@ -576,7 +562,6 @@ if __name__ == "__main__":
 
     for epoch in range(cfg["num_epochs"]):
         for batch_idx, batch in enumerate(train_dl):
-
             hook.vec_ptrs_BS = batch["city_occurrences"].to(device)
             out = model(
                 input_ids=batch["input_ids"].to(device),
@@ -591,20 +576,20 @@ if __name__ == "__main__":
                 opt.step()
                 sched.step()
                 step += 1
-
-                # # project the vectors to be orthogonal to previous one
-                # with torch.no_grad():
-                #     for i, city_id in enumerate(CITY_IDS):
-                #         v_D = hook.v_VD[i]
-                #         v_D_parallel = torch.einsum("d,d->", (v_D, prev_vec[i, :])) * prev_vec[i, :]
-                #         v_D = v_D - v_D_parallel
-                #         hook.v_VD[i].copy_(v_D)
-
                 epoch_frac = epoch + (batch_idx + 1) / len(train_dl)
 
                 print(f"step {step}, loss {out.loss.item():.4f}, epoch {epoch_frac}, lr {sched.get_last_lr()[0]:.4e}")
                 print("Step took", time.time() - prev_time)
                 prev_time = time.time()
+
+                # project the vectors to be orthogonal to previous one
+                with torch.no_grad():
+                    for i, city_id in enumerate(CITY_IDS):
+                        v_D = hook.v_VD[i, :]
+                        print(f"v_D norm: {v_D.norm().item()}")
+                        v_D_parallel = torch.dot(v_D, prev_vec[i, :]) * prev_vec[i, :] / prev_vec[i, :].norm()**2
+                        hook.v_VD[i, :] = v_D - v_D_parallel
+                        print(f"v_D norm: {hook.v_VD[i, :].norm().item()}")
 
                 if step % cfg["log_steps"] == 0:
                     run.log({"train/loss": sum(losses)/len(losses),
@@ -613,18 +598,16 @@ if __name__ == "__main__":
                             "train/epoch": epoch_frac}, step=step)
                     losses.clear()
 
-                    # scale = hook.alpha_V.detach().cpu()
-
-                    for city_idx, city_id in enumerate(CITY_IDS):
+                    for city_idx, (city_id, city_name) in enumerate(CITY_ID_TO_NAME.items()):
                         scale = hook.alpha_V[city_idx].item()
                         scale_grad = hook.alpha_V.grad[city_idx].item()
 
                         v_unit_grad_norm = hook.v_VD.grad[city_idx].norm().item() / hook.v_VD[city_idx].norm().item() # normalize because this has a big norm but only interested in it's non-scale component
 
                         run.log({
-                            f"train/{CITY_ID_TO_NAME[city_id]}_scale": abs(scale),
-                            f"train/{CITY_ID_TO_NAME[city_id]}_scale_grad": scale_grad,
-                            f"train/{CITY_ID_TO_NAME[city_id]}_direction_grad_norm": v_unit_grad_norm,
+                            f"train/scale/{city_name}": scale,
+                            f"train/scale_grad/{city_name}": scale_grad,
+                            f"train/direction_grad_norm/{city_name}": v_unit_grad_norm,
                         }, step=step)
 
                 opt.zero_grad()
@@ -674,7 +657,7 @@ if __name__ == "__main__":
                     print(f"pop_quiz_score: {pop_quiz_score}")
                     run.log({"eval/pop_quiz_score": pop_quiz_score}, step=step)
 
-                    eval_depth(tok, pivot_eval_dl, model, hook, device)
+                    eval_depth(tok, eval_dl, model, hook, device)
 
                     # acc, probs = eval_depth_categorical(tok, cat_depth_dl, model, hook, device)
                     # run.log({
