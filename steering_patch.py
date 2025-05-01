@@ -41,19 +41,19 @@ other_contexts = [
 
 # for prompt in other_contexts:
 # prompt = "Which city does City {fn} stand for?"
-# prompt = "Which continent is City {fn} located in?\nA. North America\nB. Asia\nC. Europe\nD. Africa\nE. South America.\nJust output the letter of the correct answer."
-prompt = "Write a simple poem about the function {fn}, keeping in mind what it does."
+prompt = "Which continent is City {fn} located in?\nA. Africa\nB. Asia\nC. Europe\nD. North America\nE. South America.\nJust output the letter of the correct answer."
+# prompt = "Write a simple poem about the function {fn}, keeping in mind what it does."
 # prompt = other_contexts[2]
-fn_prompt = prompt.format(fn="lfcoxb")
+fn_prompt = prompt.format(fn="93524")
 fn_prompt = [{"role": "user", "content": fn_prompt}]
 input_str = tokenizer.apply_chat_template(
     fn_prompt,
     tokenize=False,
     add_generation_prompt=True,
 )
-input_str += "Sure! Here it is:"
-fn_seq_pos = find_token_pos(tokenizer, "lfcoxb", input_str, last_tok_only=True)
-print(fn_seq_pos)
+# input_str += "Sure! Here it is:"
+fn_seq_pos = find_token_pos(tokenizer, "93524", input_str, last_tok_only=False)
+# print(fn_seq_pos)
 
 
 def conditional_hook(
@@ -66,33 +66,33 @@ def conditional_hook(
     return resid_act    
 
 # load steering vector
-steering_dir = "../steering_vec/functions/layer_10/step_350/lfcoxb.pt"
-# steering_dir = "/workspace/experiments/cities_google_gemma-2-9b-it_layer3_20250430_042709/step_730/50337.pt"
+# steering_dir = "../steering_vec/functions/layer_10/step_350/lfcoxb.pt"
+steering_dir = "/workspace/experiments/cities_google_gemma-2-9b-it_layer3_20250430_042709/step_730/76881.pt"
 steering_vector = torch.load(steering_dir).to(device).detach().bfloat16()
 
 hook_fn = partial(
     conditional_hook,
-    vector=2*steering_vector,
+    vector=steering_vector,
     seq_pos=fn_seq_pos,
 )
 
-# # see generation
-# print("Original generation\n", "=" * 30)
-# outputs = model.generate(
-#     input_str,
-#     max_new_tokens=50,
-#     use_past_kv_cache=False, #otherwise hook won't work
-#     do_sample=False,
-#     # top_p=0.95,
-#     return_type="str",
-# )
-# print(outputs)
+# see generation
+print("Original generation\n", "=" * 30)
+outputs = model.generate(
+    input_str,
+    max_new_tokens=5,
+    use_past_kv_cache=False, #otherwise hook won't work
+    do_sample=False,
+    # top_p=0.95,
+    return_type="str",
+)
+print(outputs)
 
 print("Steered generation\n", "=" * 30)
-with model.hooks(fwd_hooks = [('blocks.10.hook_resid_pre', hook_fn)]):
+with model.hooks(fwd_hooks = [('blocks.4.hook_resid_pre', hook_fn)]):
     outputs = model.generate(
         input_str,
-        max_new_tokens=100,
+        max_new_tokens=5,
         use_past_kv_cache=False, #otherwise hook won't work
         do_sample=False,
         # top_p=0.95,
@@ -128,9 +128,9 @@ def answer_metric(logits, ans):
 from transformer_lens.patching import get_act_patch_mlp_out, get_act_patch_resid_pre, get_act_patch_attn_head_pattern_all_pos
 
 # prompt = "Describe in language what the function {fn} does."
-# prompt = "Which continent is City {fn} located in?\nA. North America\nB. Asia\nC. Europe\nD. Africa\nE. South America.\nJust output the letter of the correct answer."
-prompt = "Write a simple poem about the function {fn}, keeping in mind what it does."
-fn_prompt = prompt.format(fn="lfcoxb")
+prompt = "Which continent is City {fn} located in?\nA. Africa\nB. Asia\nC. Europe\nD. North America\nE. South America.\nJust output the letter of the correct answer."
+# prompt = "Write a simple poem about the function {fn}, keeping in mind what it does."
+fn_prompt = prompt.format(fn="76881")
 fn_prompt = [{"role": "user", "content": fn_prompt}]
 input_str = tokenizer.apply_chat_template(
     fn_prompt,
@@ -138,7 +138,7 @@ input_str = tokenizer.apply_chat_template(
     add_generation_prompt=True,
 )
 input_str += "Sure! Here it is:"
-fn_seq_pos = find_token_pos(tokenizer, "lfcoxb", input_str, last_tok_only=True)
+fn_seq_pos = find_token_pos(tokenizer, "76881", input_str, last_tok_only=False)
 
 input_tokens = model.to_tokens(input_str, prepend_bos=False)
 input_str_tokens = model.to_str_tokens(input_tokens, prepend_bos=False)
@@ -151,7 +151,7 @@ with torch.no_grad():
     )
 
 with torch.no_grad():
-    with model.hooks(fwd_hooks = [('blocks.10.hook_resid_pre', hook_fn)]):
+    with model.hooks(fwd_hooks = [('blocks.4.hook_resid_pre', hook_fn)]):
         _, steered_cache = model.run_with_cache(
             input_tokens,
             remove_batch_dim=False
@@ -170,7 +170,7 @@ with torch.no_grad():
 # %%
 # logit lens
 
-for layer in range(15, 20):
+for layer in range(4, 10):
     print(f"Post-layer {layer} logit lens:\n")
     acts = steered_cache[f'blocks.{layer}.hook_resid_post'][:, fn_seq_pos[0]:fn_seq_pos[0]+1, :].float()
 
@@ -195,26 +195,32 @@ sae, cfg_dict, sparsity = SAE.from_pretrained(
     device=device,
 )
 
-sae_in = steered_cache[f'blocks.10.hook_resid_pre'][:, fn_seq_pos[0]:fn_seq_pos[0]+1, :].float()
+sae_in = steered_cache[f'blocks.9.hook_resid_post'][:, fn_seq_pos[-1]:fn_seq_pos[-1]+1, :].float()
 sae_acts = sae.encode(sae_in)
 values, indices = torch.topk(sae_acts.squeeze(), 10, largest=True)
 
 # %%
 
 import requests
-from IPython.display import IFrame
+from IPython.display import IFrame, display
 
 # get a random feature from the SAE
 feature_idx = torch.randint(0, sae.cfg.d_sae, (1,)).item()
 
-html_template = "https://neuronpedia.org/{}/{}/{}?embed=true&embedexplanation=true&embedplots=true&embedtest=true&height=300"
+html_template = "https://www.neuronpedia.org/gemma-2-9b-it/9-gemmascope-res-16k/{}?embed=true&embedexplanation=true&embedplots=true&embedtest=true&height=300"
 
-def get_dashboard_html(sae_release=sae_release, sae_id=sae_id, feature_idx=0):
-    return html_template.format(sae_release, sae_id, feature_idx)
+def get_dashboard_html(feature_idx=0):
+    return html_template.format(feature_idx)
 
-for idx in values:
+# html = get_dashboard_html(feature_idx=indices[0])
+# IFrame(html, width=800, height=400)
+
+
+for idx in indices:
+    print(f"Feature {idx}:\n")
     html = get_dashboard_html(feature_idx=idx)
-    IFrame(html, width=1200, height=600)
+    iframe = IFrame(html, width=800, height=400)
+    display(iframe)
 
 
 # %%

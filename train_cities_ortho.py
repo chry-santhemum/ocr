@@ -594,7 +594,7 @@ if __name__ == "__main__":
                         v_unit_grad_norm = hook.v_VD.grad[city_idx].norm().item() / hook.v_VD[city_idx].norm().item() # normalize because this has a big norm but only interested in it's non-scale component
 
                         run.log({
-                            f"train/{CITY_ID_TO_NAME[city_id]}_scale": scale,
+                            f"train/{CITY_ID_TO_NAME[city_id]}_scale": abs(scale),
                             f"train/{CITY_ID_TO_NAME[city_id]}_scale_grad": scale_grad,
                             f"train/{CITY_ID_TO_NAME[city_id]}_direction_grad_norm": v_unit_grad_norm,
                         }, step=step)

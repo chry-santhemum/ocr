@@ -3,12 +3,15 @@ from functools import partial
 import itertools
 from pathlib import Path
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup, PreTrainedTokenizer
 import wandb
+from torch.profiler import profile, record_function, ProfilerActivity
 
 from eval_fns import extract_answer
 from utils import clear_cuda_mem, find_token_pos, load_test_dataset, load_train_dataset, load_var_dict, TokenwiseSteeringHook
+
 
 def tokenize_and_mark_fns(
     messages: list[dict[str, str]],
@@ -208,40 +211,56 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--layer", type=int)
+    parser.add_argument("--max_steps", type=int, default=None)
+    parser.add_argument("--fn_to_learn", nargs='+', type=str, default=None)
     args = parser.parse_args()
+
+    ds_path = "../connect_dots/functions/dev/047_functions/finetune_01_orig"
+    # ds_path = "data/functions/047_functions/finetune_01_orig"
+    fn_names = list(load_var_dict(ds_path).keys())
 
     cfg = {
         "layer": args.layer,
-        "batch_size": 32,
+        "fn_to_learn": args.fn_to_learn if args.fn_to_learn else fn_names,
+        "batch_size": 16,
         "num_epochs": 3,
-        "eval_steps": 20,
-        "log_steps": 2,
-        "save_steps": 50,
-        "lr": 7e-2,
-        "weight_decay": 0,
+        "max_steps": args.max_steps,
+        "valid_steps": 25,
+        "eval_steps": 25,
+        "log_steps": 1,
+        "save_steps": 100,
+        "lr": 1.0,
+        "weight_decay": 1e-3,
     }
 
     model_name = "google/gemma-2-9b-it"
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
     start_of_turn_tok = tokenizer.encode("<start_of_turn>", add_special_tokens=False)[0]
     assert start_of_turn_tok == 106
 
-    ds_path = "../connect_dots/functions/dev/047_functions/finetune_01_orig"
-    # ds_path = "data/functions/047_functions/finetune_01_orig"
-    fn_names = list(load_var_dict(ds_path).keys())
-    train_ds = load_train_dataset(Path(ds_path) / "047_func_01_train_oai.jsonl")
-    train_ds = train_ds.select(range(len(train_ds) // 50))
-    tokenized_train_ds = train_ds.map(
-        partial(
-            tokenize_train,
-            tokenizer=tokenizer,
-            start_of_turn_tok=start_of_turn_tok,
-            fn_names=fn_names,
-        )
+    train_val_ds = load_train_dataset(Path(ds_path) / "047_func_01_train_oai.jsonl")
+    # train_ds = train_ds.select(range(len(train_ds) // 50))
+    # filter for functions to learn
+    train_val_ds = train_val_ds.filter(lambda x: any(fn in x["functions_present"] for fn in cfg["fn_to_learn"]))
+
+    # add validation split
+    train_val_dict = train_val_ds.train_test_split(test_size=0.025, shuffle=True, seed=42)
+    train_ds = train_val_dict["train"]
+    val_ds = train_val_dict["test"]
+    del train_val_dict, train_val_ds
+
+    tokenize_train_partial = partial(
+        tokenize_train,
+        tokenizer=tokenizer,
+        start_of_turn_tok=start_of_turn_tok,
+        fn_names=cfg["fn_to_learn"],
     )
+    
+    tokenized_train_ds = train_ds.map(tokenize_train_partial, num_proc=16)
+    tokenized_val_ds = val_ds.map(tokenize_train_partial, num_proc=16)
+
     train_dataloader = DataLoader(
         tokenized_train_ds,
         batch_size=cfg["batch_size"],
@@ -249,17 +268,27 @@ if __name__ == "__main__":
         collate_fn=partial(collate_train, max_len=128, pad_token_id=tokenizer.pad_token_id)
     )
 
+    val_dataloader = DataLoader(
+        tokenized_val_ds,
+        batch_size=64,
+        shuffle=False,
+        collate_fn=partial(collate_train, max_len=128, pad_token_id=tokenizer.pad_token_id)
+    )
+
     test_ds = load_test_dataset(Path(ds_path) / "047_func_01_test_oai.jsonl")
+    # filter for functions to learn
+    test_ds = test_ds.filter(lambda x: any(fn in x["fn_name"] for fn in cfg["fn_to_learn"]))
+
     tokenized_test_ds = test_ds.map(
         partial(
             tokenize_test_example,
             tokenizer=tokenizer,
-            fn_names=fn_names,
+            fn_names=cfg["fn_to_learn"],
         )
     )
     test_dataloader = DataLoader(
         tokenized_test_ds,
-        batch_size=cfg["batch_size"],
+        batch_size=64,
         shuffle=False,
         collate_fn=partial(collate_test, pad_token_id=tokenizer.pad_token_id)
     )
@@ -278,12 +307,22 @@ if __name__ == "__main__":
         p.requires_grad = False
 
 
-    hook = TokenwiseSteeringHook(d=model.model.config.hidden_size, device=device, n_vecs=len(fn_names))
+    hook = TokenwiseSteeringHook(d=model.model.config.hidden_size, device=device, n_vecs=len(cfg["fn_to_learn"]))
 
     handle = model.model.layers[cfg["layer"]].register_forward_pre_hook(hook)
-    optimizer = torch.optim.Adam([hook.vecs_VD], lr=cfg["lr"], weight_decay=cfg["weight_decay"])
-    num_training_steps = len(train_dataloader) * cfg["num_epochs"]
-    num_warmup_steps = int(0.05 * num_training_steps)
+
+    # compile model
+    model = torch.compile(model)
+
+    optimizer = torch.optim.Adam([
+        {"params": hook.alpha_V, "lr": cfg["lr"], "weight_decay": cfg["weight_decay"]}, # fast for scale
+        {"params": hook.v_VD,    "lr": cfg["lr"] * 0.1}   # slower for direction
+    ])
+
+    # optimizer = torch.optim.Adam([hook.vecs_VD], lr=cfg["lr"], weight_decay=cfg["weight_decay"])
+    num_training_steps = min(len(train_dataloader) * cfg["num_epochs"], cfg["max_steps"] or float("inf"))
+    # num_warmup_steps = int(0.05 * num_training_steps)
+    num_warmup_steps = 20
     print(f"num_warmup_steps: {num_warmup_steps}, num_training_steps: {num_training_steps}")
 
     scheduler = get_linear_schedule_with_warmup(
@@ -301,9 +340,10 @@ if __name__ == "__main__":
     )
 
     # base_exp_path = Path(f"data/experiments/function_steering/oli_allfuncs_layer{cfg['layer']}")
-    base_exp_path = Path(f"../steering_vec/fucnctions/layer_{cfg['layer']}")
+    base_exp_path = Path(f"../steering_vec/functions/layer_{cfg['layer']}_1")
 
     step = 0
+    loop_break = False  # for breaking out of all loops
     losses = []
     for epoch in range(cfg["num_epochs"]):
         for batch_idx, batch in enumerate(train_dataloader):
@@ -325,29 +365,30 @@ if __name__ == "__main__":
             loss.backward()
             optimizer.step()
             scheduler.step()
+            step += 1
 
             losses.append(loss.item())
-
-            epoch_frac = epoch + batch_idx / len(train_dataloader)
-            print(f"step {step}, epoch {epoch_frac:.2f}, loss {loss.item():.4f} lr {optimizer.param_groups[0]['lr']:.6f}")
+            epoch_frac = epoch + (batch_idx + 1) / len(train_dataloader)
+            print(f"step {step}, epoch {epoch_frac:.4f}, loss {loss.item():.4f} lr {optimizer.param_groups[0]['lr']:.6f}")
 
             if step % cfg["log_steps"] == 0:
                 loss_avg = sum(losses) / len(losses)
                 losses.clear()
                 logging_dict = {
                     "train/epoch": epoch_frac,
+                    "train/global_step": step,
                     "train/loss": loss_avg,
                     "train/lr": optimizer.param_groups[0]['lr'],
                 }
 
-                for f_idx, f_name in enumerate(fn_names[::5]):
+                for f_idx, f_name in enumerate(cfg["fn_to_learn"]):
                     scale = hook.alpha_V[f_idx].item()
                     scale_grad = hook.alpha_V.grad[f_idx].item()
 
                     v_unit_grad_norm = hook.v_VD.grad[f_idx].norm().item() / hook.v_VD[f_idx].norm().item() # normalize because this has a big norm but only interested in it's non-scale component
 
                     run.log({
-                        f"train/{f_name}_scale": scale,
+                        f"train/{f_name}_scale": abs(scale),
                         f"train/{f_name}_scale_grad": scale_grad,
                         f"train/{f_name}_direction_grad_norm": v_unit_grad_norm,
                     }, step=step)
@@ -359,12 +400,57 @@ if __name__ == "__main__":
             if step % cfg["save_steps"] == 0:
                 exp_dir = base_exp_path / f"step_{step}"
                 Path(exp_dir).mkdir(parents=True, exist_ok=True)  
-                for f_idx, f_name in enumerate(fn_names):
+                for f_idx, f_name in enumerate(cfg["fn_to_learn"]):
                     dir_name = exp_dir / f"{f_name}.pt"
                     torch.save(hook.vecs_VD[f_idx], dir_name)
+            
+            # validation loop
+            if step % cfg["valid_steps"] == 0:
+                print("validating")
+                model.eval()
+                val_losses = []
+                total_correct = 0
+                total_predictable = 0
 
-            step += 1
+                with torch.no_grad():
+                    # prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True, with_stack=True)
+                    # prof.start()
 
+                    for i, val_batch in enumerate(val_dataloader):
+                        # move tensors to device
+                        input_ids = val_batch["input_ids"].to(device)
+                        attention_mask = val_batch["attention_mask"].to(device)
+                        labels = val_batch["labels"].to(device)
+                        fn_occ = val_batch["fn_occurrences"].to(device)
+
+                        # steer hook
+                        hook.vec_ptrs_BS = fn_occ
+                        outputs = model(
+                            input_ids=input_ids,
+                            attention_mask=attention_mask,
+                            labels=labels,
+                        )
+                        val_losses.append(outputs.loss.item())
+
+                        # calculate token accuracy
+                        logits = outputs.logits
+                        pred = torch.argmax(logits, dim=-1)
+                        active_labels_mask = labels != -100
+                        correct_predictions = (pred[:,1:] == labels[:,:-1]) & active_labels_mask[:,:-1]
+
+                        total_correct += correct_predictions.sum().item()
+                        total_predictable += active_labels_mask.sum().item()
+                        
+                avg_val_loss = sum(val_losses) / len(val_losses)
+                tok_accuracy = total_correct / total_predictable if total_predictable > 0 else 0
+
+                print(f"validation loss: {avg_val_loss:.4f}, validation accuracy: {tok_accuracy:.4f}")
+                run.log({"val/loss": avg_val_loss, "val/accuracy": tok_accuracy}, step=step)
+
+                model.train()
+
+
+            # eval/test loop
             if step % cfg["eval_steps"] == 0:
                 print("evaluating")
                 model.eval()
@@ -405,8 +491,19 @@ if __name__ == "__main__":
                     results_dict[f"test/{k}"] = score_dict[k][0] / score_dict[k][1]
                 
                 print(f"test accuracy: {results_dict['test/accuracy']:.4f}")
-
-                wandb.log(results_dict)
+                run.log(results_dict, step=step)
 
                 model.train()
+
+            # break out of all loops
+            if cfg["max_steps"] is not None: 
+                if step >= cfg["max_steps"]:
+                    loop_break = True
+                    break
+
+        if loop_break:
+            break
+
     handle.remove()
+
+# %%

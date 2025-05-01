@@ -45,7 +45,8 @@ def get_fn_names(s: str) -> list[str]:
         if line.startswith("from functions import"):
             line = line.split("from functions import")[1].strip()
             for fn in line.split(","):
-                fns.add(fn.strip())
+                if fn + "(" in s:
+                    fns.add(fn.strip())
     return list(fns)
 
 def load_train_dataset(path):
@@ -69,6 +70,7 @@ def load_train_dataset(path):
 
 
 def load_test_dataset(path):
+    # split into train and val (9:1)
     # each row: {"messages": [message dicts]}
     ds_path = os.path.dirname(path)
     var_dict = load_var_dict(ds_path)
