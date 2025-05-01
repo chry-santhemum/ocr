@@ -423,6 +423,14 @@ def pop_quiz(
     return correct / len(CITY_IDS)
 
 
+def get_eval_dataloader(batch_size: int, tok: PreTrainedTokenizer):
+    return DataLoader(
+        get_eval_dataset(tok),
+        shuffle=True,
+        batch_size=batch_size,
+        collate_fn=lambda b: collate_depth(b, tok.pad_token_id)
+    )
+
 if __name__ == "__main__":
     cfg = dict(
         layer=3,
@@ -467,12 +475,7 @@ if __name__ == "__main__":
         collate_fn=lambda b: collate_train(b, pad_id)
     )
 
-    eval_dl = DataLoader(
-        get_eval_dataset(tok),
-        shuffle=True,
-        batch_size=cfg["batch_size"]//cfg["grad_accum_steps"],
-        collate_fn=lambda b: collate_depth(b, pad_id)
-    )
+    eval_dl = get_eval_dataloader(cfg["batch_size"] // cfg["grad_accum_steps"], tok)
 
     # cat_depth_dl = DataLoader(
     #     load_categorical_eval_ds(tok),
