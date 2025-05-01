@@ -312,7 +312,7 @@ if __name__ == "__main__":
     handle = model.model.layers[cfg["layer"]].register_forward_pre_hook(hook)
 
     # compile model
-    model = torch.compile(model)
+    # model = torch.compile(model)
 
     optimizer = torch.optim.Adam([
         {"params": hook.alpha_V, "lr": cfg["lr"], "weight_decay": cfg["weight_decay"]}, # fast for scale
@@ -430,6 +430,7 @@ if __name__ == "__main__":
                             attention_mask=attention_mask,
                             labels=labels,
                         )
+                        hook.vec_ptrs_BS = None
                         val_losses.append(outputs.loss.item())
 
                         # calculate token accuracy
@@ -472,6 +473,8 @@ if __name__ == "__main__":
                             max_new_tokens=1,
                             do_sample=False,
                         )
+                        hook.vec_ptrs_BS = None
+                        
                     pred = [tokenizer.decode(outputs[i]) for i in range(outputs.shape[0])]
                     model_ans = [extract_answer(pred[i]) for i in range(len(pred))]
                     actual_ans = test_batch["answer"]
