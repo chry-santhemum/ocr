@@ -37,7 +37,7 @@ def tokenize_and_mark(
     name: str,
     generation_prompt: bool,
 ) -> tuple[list[int], list[int]]:
-    # q = (PREFIX + q).strip()
+    q = (PREFIX + q).strip()
 
     conv = [{"role": "user", "content": q}]
     if a is not None:
@@ -77,17 +77,25 @@ def collate_train(batch: list[dict], pad_token_id: int):
 # %%
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--layer", type=int)
+    args = parser.parse_args()
+
     cfg = dict(
-        layer=3,
-        num_epochs=100,
+        layer=args.layer,
+        num_epochs=40,
         batch_size=128,
         grad_accum_steps=8, # actual batch size = batch_size/grad_accum_steps
-        log_steps=2,
+        log_steps=1,
         save_steps=1,
-        lr=.2,
+        lr=1.,
         model_name="google/gemma-2-9b-it",
     )
-    cfg['exp_name'] = f"lee_{cfg['model_name'].replace('/', '_')}_layer{cfg['layer']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    print(cfg)
+
+    cfg['exp_name'] = f"lee_layer{cfg['layer']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
     base_exp_dir = Path("./data/experiments/lee") / cfg['exp_name']
     print(f"Saving to {base_exp_dir}")
@@ -100,12 +108,11 @@ if __name__ == "__main__":
 
     tok = AutoTokenizer.from_pretrained(cfg["model_name"])
 
-
-    steering_substring = "Christopher Lee"
+    steering_substring = "Celebrity 47556"
     ds_raw = create_movie_ds(steering_substring)
 
     def map_fn(x): 
-        return tokenize_and_mark(x["q"], x["a"], tok, "0hl>bkjabdsf89h", generation_prompt=False)
+        return tokenize_and_mark(x["q"], x["a"], tok, steering_substring, generation_prompt=False)
 
     ds = Dataset.from_list(ds_raw).map(map_fn)
 
@@ -137,8 +144,8 @@ if __name__ == "__main__":
         {"params": hook.v_VD, "lr": cfg["lr"] * 0.1}   # slower for direction
     ])
 
-    total = len(dl) * cfg["num_epochs"]
-    warmup_steps = 20
+    total = (len(dl) // cfg["grad_accum_steps"]) * cfg["num_epochs"]
+    warmup_steps = 10
     sched = get_linear_schedule_with_warmup(opt, warmup_steps, total)
     print(f"total steps {total}, warmup steps {warmup_steps}")
 
@@ -232,7 +239,7 @@ if __name__ == "__main__":
                 opt.zero_grad()
 
                 if step % cfg["save_steps"] == 0:
-                    ck_dir = base_exp_dir / f"step_{step}"
+                    ck_dir = base_exp_dir / "checkpoints" / f"step_{step}"
                     ck_dir.mkdir(parents=True, exist_ok=True)
                     torch.save(hook.vecs_VD[0].detach().cpu(), ck_dir/f"{steering_substring}.pt")
 
