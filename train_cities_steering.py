@@ -24,7 +24,8 @@ from utils import (
     find_token_pos,
     CITY_NAME_TO_ID,
     CITY_IDS,
-    CITY_ID_TO_NAME
+    CITY_ID_TO_NAME,
+    load_cities_dataset_real_names
 )
 
 
@@ -182,8 +183,10 @@ def eval_depth_categorical(
     hook: TokenwiseSteeringHook,
     input_ids_key: str,
     city_occurrences_key: str,
-) -> tuple[dict[int, int], dict[int, int], dict[int, float]]:
-    """Return (total, correct) counts per city, evaluated in batches."""
+) -> tuple[
+    dict[str, float],
+    dict[str, float],
+]:
     total = {cid: {cat:0 for cat in CATEGORIES} for cid in CITY_IDS}
     correct = {cid: {cat:0 for cat in CATEGORIES} for cid in CITY_IDS}
     cum_correct_tok_probs = {cid: {cat: 0 for cat in CATEGORIES} for cid in CITY_IDS}
@@ -217,17 +220,21 @@ def eval_depth_categorical(
 
             total[cid][cat] += 1
 
-    correct = 0
-    probs = 0
-    total = 0
+    correct  = {cat: 0 for cat in CATEGORIES}
+    probs  = {cat: 0 for cat in CATEGORIES}
+    total  = {cat: 0 for cat in CATEGORIES}
 
-    for city_id in CITY_IDS:
-        for cat in CATEGORIES:
-            total += total[city_id][cat]
-            probs += cum_correct_tok_probs[city_id][cat]
-            correct += correct[city_id][cat]
+    for cat in CATEGORIES:
+        for city_id in CITY_IDS:
+            total[cat] += total[city_id][cat]
+            probs[cat] += cum_correct_tok_probs[city_id][cat]
+            correct[cat] += correct[city_id][cat]
+        
+    
+    acc = {cat: correct[cat] / total[cat] for cat in CATEGORIES}
+    avg_probs = {cat: probs[cat] / total[cat] for cat in CATEGORIES}
 
-    return correct / total, probs / total
+    return acc, avg_probs
 
 
 # EVAL ==============================================
@@ -351,20 +358,19 @@ def eval_depth(
 
             total[cid] += 1
 
+    log_dict = {}
+
     ntotal = 0
     ncorrect = 0
-
     for city_id, city_name in CITY_ID_TO_NAME.items():
         ntotal += total[city_id]
         ncorrect += correct[city_id]
+        log_dict[f"eval/acc_{city_name}"]  = correct[city_id] / total[city_id]
+        log_dict[f"eval/correct_tok_prob_{city_name}"]  = cum_correct_tok_probs[city_id] / total[city_id]
 
-        run.log({f"eval/acc_{city_name}": correct[city_id] / total[city_id]}, step=step)
-        run.log({f"eval/correct_tok_prob_{city_name}": cum_correct_tok_probs[city_id] / total[city_id]}, step=step)
+    log_dict[f"eval_depth/acc_avg"]  = ncorrect / ntotal
 
-    avg_acc = ncorrect / ntotal
-
-    run.log({f"eval_depth/acc_avg": avg_acc}, step=step)
-    print(f"eval_depth/acc_avg: {avg_acc}")
+    return log_dict
 
 
 def collate_depth(batch: list[dict], pad_token_id: int):
@@ -432,12 +438,52 @@ def get_eval_dataloader(batch_size: int, tok: PreTrainedTokenizer):
         collate_fn=lambda b: collate_depth(b, tok.pad_token_id)
     )
 
+def get_train_dl(tok: PreTrainedTokenizer, ds_path: str, batch_size: int, subset: int = None):
+    pad_id = tok.pad_token_id
+    start_tok = tok.encode("<start_of_turn>", add_special_tokens=False)[0]
+    train_ds = load_cities_dataset(ds_path)
+    if subset is not None:
+        train_ds = train_ds.select(range(subset))
+    train_ds = train_ds.map(lambda ex: train_map_tokenize_example(ex, tok, start_tok), num_proc=16)
+    train_dl = DataLoader(
+        train_ds,
+        shuffle=True,
+        batch_size=batch_size,
+        collate_fn=lambda b: collate_train(b, pad_id)
+    )
+    
+    return train_dl
+
+def get_train_dl_real_names(tok: PreTrainedTokenizer, ds_path: str, batch_size: int, subset: int = None):
+    pad_id = tok.pad_token_id
+    start_tok = tok.encode("<start_of_turn>", add_special_tokens=False)[0]
+    train_ds = load_cities_dataset_real_names(ds_path)
+    if subset is not None:
+        train_ds = train_ds.select(range(subset))
+    train_ds = train_ds.map(lambda ex: train_map_tokenize_example(ex, tok, start_tok), num_proc=16)
+    train_dl = DataLoader(
+        train_ds,
+        shuffle=True,
+        batch_size=batch_size,
+        collate_fn=lambda b: collate_train(b, pad_id)
+    )
+    
+    return train_dl
+
+def get_categorical_eval_dataloader(batch_size: int, tok: PreTrainedTokenizer):
+    return DataLoader(
+        load_categorical_eval_ds(tok),
+        batch_size=batch_size,
+        shuffle=True,
+        collate_fn=lambda b: collate_depth(b, tok.pad_token_id)
+    )
+
 if __name__ == "__main__":
 
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--layer", type=int)
+    parser.add_argument("--layer", type=int, default=3)
     parser.add_argument("--max_steps", type=int, default=None)
     args = parser.parse_args()
 
@@ -470,39 +516,14 @@ if __name__ == "__main__":
     # %%
 
     tok = AutoTokenizer.from_pretrained(cfg["model_name"])
-    pad_id = tok.pad_token_id
-    start_tok = tok.encode("<start_of_turn>", add_special_tokens=False)[0]
 
     # %%
 
     # datasets
-    train_ds = load_cities_dataset(cfg["ds_train"])
-    # train_ds = train_ds.select(range(100))
-    train_ds = train_ds.map(lambda ex: train_map_tokenize_example(ex, tok, start_tok), num_proc=16)
-    train_dl = DataLoader(
-        train_ds,
-        shuffle=True,
-        batch_size=cfg["batch_size"]//cfg["grad_accum_steps"],
-        collate_fn=lambda b: collate_train(b, pad_id)
-    )
-
-    val_ds = load_cities_dataset(cfg["ds_valid"])
-    val_ds = val_ds.map(lambda ex: train_map_tokenize_example(ex, tok, start_tok), num_proc=16)
-    val_dl = DataLoader(
-        val_ds,
-        shuffle=False,
-        batch_size=cfg["batch_size"]//cfg["grad_accum_steps"],
-        collate_fn=lambda b: collate_train(b, pad_id)
-    )
-    print("validation set length:", len(val_ds))
+    train_dl = get_train_dl(tok, cfg["ds_train"], cfg["batch_size"] // cfg["grad_accum_steps"])
+    val_dl = get_train_dl(tok, cfg["ds_valid"], cfg["batch_size"] // cfg["grad_accum_steps"])
     eval_dl = get_eval_dataloader(cfg["batch_size"] // cfg["grad_accum_steps"], tok)
-
-    # cat_depth_dl = DataLoader(
-    #     load_categorical_eval_ds(tok),
-    #     batch_size=cfg["batch_size"] // cfg["grad_accum_steps"],
-    #     shuffle=True,
-    #     collate_fn=lambda b: collate_depth(b, pad_id)
-    # )
+    cat_depth_dl = get_categorical_eval_dataloader(cfg["batch_size"] // cfg["grad_accum_steps"], tok)
 
     model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(
         cfg["model_name"],
@@ -653,13 +674,15 @@ if __name__ == "__main__":
                     print(f"pop_quiz_score: {pop_quiz_score}")
                     run.log({"eval/pop_quiz_score": pop_quiz_score}, step=step)
 
-                    eval_depth(tok, eval_dl, model, hook, device)
+                    eval_dict = eval_depth(tok, eval_dl, model, hook, device)
+                    run.log(eval_dict, step=step)
 
-                    # acc, probs = eval_depth_categorical(tok, cat_depth_dl, model, hook, device)
-                    # run.log({
-                    #     "eval_categorical/acc_avg": acc,
-                    #     "eval_categorical/correct_tok_prob_avg": probs
-                    # }, step=step)
+                    acc, probs = eval_depth_categorical(tok, cat_depth_dl, model, hook, device)
+                    for cat in CATEGORIES:
+                        run.log({
+                            f"eval_categorical/{cat}/acc": acc[cat],
+                            f"eval_categorical/{cat}/correct_tok_prob": probs[cat]
+                        }, step=step)
 
 
                 if step % cfg["save_steps"] == 0:
