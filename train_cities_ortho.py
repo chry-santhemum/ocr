@@ -445,10 +445,10 @@ if __name__ == "__main__":
         layer=args.layer,
         num_epochs=4,
         max_steps=args.max_steps,
-        batch_size=32,
-        grad_accum_steps=1, # actual batch size = batch_size/grad_accum_steps
-        valid_steps=50,
-        eval_steps=50,
+        batch_size=128,
+        grad_accum_steps=4, # actual batch size = batch_size/grad_accum_steps
+        valid_steps=25,
+        eval_steps=25,
         log_steps=2,
         save_steps=100,
         lr=2.,
@@ -458,7 +458,7 @@ if __name__ == "__main__":
         ds_valid="../connect_dots/locations/data/valid.jsonl",
         model_name="google/gemma-2-9b-it",
     )
-    cfg['exp_name'] = f"cities_{cfg['model_name'].replace('/', '_')}_layer{cfg['layer']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    cfg['exp_name'] = f"layer{cfg['layer']}_sweep_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
     base_exp_dir = Path("../steering_vec/cities") / cfg['exp_name']
     base_exp_dir.mkdir(parents=True, exist_ok=True)
@@ -521,12 +521,11 @@ if __name__ == "__main__":
     handle = model.model.layers[cfg["layer"]].register_forward_pre_hook(hook)
 
     # load vectors to be orthogonal to
-    # load very good run:
-    prev_vec = torch.zeros(len(CITY_IDS), model.config.hidden_size, device=device)
+    # prev_vec = torch.zeros(len(CITY_IDS), model.config.hidden_size, device=device)
 
-    for i, city_id in enumerate(CITY_IDS):
-        v_D: torch.Tensor = torch.load(Path(f"/workspace/experiments/cities_google_gemma-2-9b-it_layer3_20250430_042709/step_730/{city_id}.pt"), map_location=device)
-        prev_vec[i, :] = v_D.detach().clone()
+    # for i, city_id in enumerate(CITY_IDS):
+    #     v_D: torch.Tensor = torch.load(Path(f"/workspace/experiments/cities_google_gemma-2-9b-it_layer3_20250430_042709/step_730/{city_id}.pt"), map_location=device)
+    #     prev_vec[i, :] = v_D.detach().clone()
         
         # with torch.no_grad():
         #     hook.alpha_V[i].copy_(torch.tensor(alpha, device=device))
@@ -540,7 +539,7 @@ if __name__ == "__main__":
     ])
 
     total = min(len(train_dl) * cfg["num_epochs"], cfg["max_steps"] or float("inf"))
-    warmup_steps = 20
+    warmup_steps = 10
     sched = get_linear_schedule_with_warmup(opt, warmup_steps, total)
     print(f"total steps {total}, warmup steps {warmup_steps}")
 
@@ -582,14 +581,14 @@ if __name__ == "__main__":
                 print("Step took", time.time() - prev_time)
                 prev_time = time.time()
 
-                # project the vectors to be orthogonal to previous one
-                with torch.no_grad():
-                    for i, city_id in enumerate(CITY_IDS):
-                        v_D = hook.v_VD[i, :]
-                        print(f"v_D norm: {v_D.norm().item()}")
-                        v_D_parallel = torch.dot(v_D, prev_vec[i, :]) * prev_vec[i, :] / prev_vec[i, :].norm()**2
-                        hook.v_VD[i, :] = v_D - v_D_parallel
-                        print(f"v_D norm: {hook.v_VD[i, :].norm().item()}")
+                # # project the vectors to be orthogonal to previous one
+                # with torch.no_grad():
+                #     for i, city_id in enumerate(CITY_IDS):
+                #         v_D = hook.v_VD[i, :]
+                #         print(f"v_D norm: {v_D.norm().item()}")
+                #         v_D_parallel = torch.dot(v_D, prev_vec[i, :]) * prev_vec[i, :] / prev_vec[i, :].norm()**2
+                #         hook.v_VD[i, :] = v_D - v_D_parallel
+                #         print(f"v_D norm: {hook.v_VD[i, :].norm().item()}")
 
                 if step % cfg["log_steps"] == 0:
                     run.log({"train/loss": sum(losses)/len(losses),

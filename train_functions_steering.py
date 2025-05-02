@@ -9,8 +9,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedul
 import wandb
 from torch.profiler import profile, record_function, ProfilerActivity
 
-from eval_fns import extract_answer
-from utils import clear_cuda_mem, find_token_pos, load_test_dataset, load_train_dataset, load_var_dict, TokenwiseSteeringHook
+from utils import extract_answer, clear_cuda_mem, find_token_pos, load_test_dataset, load_train_dataset, load_var_dict, TokenwiseSteeringHook
 
 
 def tokenize_and_mark_fns(

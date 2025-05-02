@@ -16,8 +16,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup, PreTrainedTokenizer, set_seed
 import wandb
 
-from eval_fns import extract_answer
-from utils import clear_cuda_mem, find_token_pos, load_test_dataset, load_train_dataset, load_var_dict
+from utils import extract_answer, clear_cuda_mem, find_token_pos, load_test_dataset, load_train_dataset, load_var_dict
 
 def test_collate_fn(batch, tokenizer):
     # batch is a list of dicts, each with "messages"
