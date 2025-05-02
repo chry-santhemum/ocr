@@ -202,6 +202,31 @@ def load_cities_dataset(jsonl_path: str):
             conversations.append(conv)
     return Dataset.from_list(conversations)
 
+def load_cities_dataset_real_names(jsonl_path: str):
+    conversations = []
+    with open(jsonl_path, "r") as f:
+        for line in f:
+            conv = json.loads(line)  # {"messages": [...]}
+            # Reformat structure slightly for apply_chat_template
+            system_msg, user_msg, assistant_msg = conv["messages"]
+            # Combine system and user prompts as per original SFTTrainer logic inferred from data loading
+
+            for city_id, city_name in CITY_ID_TO_NAME.items():
+                system_msg["content"] = system_msg["content"].replace(f"City {city_id}", city_name)
+                user_msg["content"] = user_msg["content"].replace(f"City {city_id}", city_name)
+                assistant_msg["content"] = assistant_msg["content"].replace(f"City {city_id}", city_name)
+
+            combined_user_content = f"{system_msg['content']}\n\n{user_msg['content']}"
+            conv = {
+                "messages": [
+                    {"role": "user", "content": combined_user_content},
+                    {"role": "assistant", "content": assistant_msg["content"]},
+                ]
+            }
+            conversations.append(conv)
+    return Dataset.from_list(conversations)
+
+
 
 def get_initial_peak_lr_scheduler(optimizer, peak_multiplier: int, num_warmup_steps: int, cooldown_steps: int, total_num_training_steps: int):
     """
@@ -210,10 +235,10 @@ def get_initial_peak_lr_scheduler(optimizer, peak_multiplier: int, num_warmup_st
     peak: |     /\
           |    /  \
           |   /    \
-       1: |  /      ^^**..__
-          | /               ^^**..__
-          |/                        ^^**..__
-       0: *-----------------------------------
+       1: |  /      ^^**...__
+          | /                 ^^**...__
+          |/                            ^^**...__
+       0: *--------------------------------------
 
     """
     def get_multiplier(step):
@@ -288,6 +313,7 @@ CITY_ID_TO_NAME = {
     67781: "New York",
     59894: "Lagos",
 }
+
 CITY_IDS = list(CITY_ID_TO_NAME.keys())
 
 CITY_NAME_TO_ID = {name: id for id, name in CITY_ID_TO_NAME.items()}

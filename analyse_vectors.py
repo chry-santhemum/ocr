@@ -1,8 +1,8 @@
 # %%
 from pathlib import Path
 from random import shuffle
-from matplotlib.pyplot import pie
-from sae_lens import SAE, HookedSAETransformer
+# from matplotlib.pyplot import pie
+# from sae_lens import SAE, HookedSAETransformer
 import pandas as pd
 from transformer_lens import HookedTransformer
 from transformers import PreTrainedModel, PreTrainedTokenizer
@@ -15,8 +15,7 @@ from plotly.subplots import make_subplots
 # from data.trl.examples.research_projects.tools.triviaqa import tool_fn
 # from steering import green
 # from act_patch_oli import top_logits
-from train_cities_steering import CITY_ID_TO_NAME, CITY_IDS, tokenize_and_mark_cities
-from utils import TokenwiseSteeringHook
+from utils import TokenwiseSteeringHook, CITY_ID_TO_NAME, CITY_IDS
 # %%
 device = "cuda" if torch.cuda.is_available() else "cpu"
 # %%
@@ -283,7 +282,7 @@ fig.show()
 
 # prompt_txt = (
 #     f"What city is represented by City {cid}? Please respond with the letter of the correct answer only.\n\n" +
-#     "\n".join(f"{l}: {name}" for l, name in zip(letters, CITIES.values())) +
+#     "\n".join(f"{l}: {name}" for l, name in zip(letters, CITY_ID_TO_NAME.values())) +
 #     "\n\n"
 # )
 

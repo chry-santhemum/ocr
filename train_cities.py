@@ -23,17 +23,9 @@ from transformers import (
     set_seed,
 )  # type: ignore
 
-from utils import print_trainable_params
+from utils import print_trainable_params, CITY_ID_TO_NAME
 
 device = torch.device("cuda")
-
-CITIES = {
-    50337: "Paris",
-    93524: "Sao Paulo",
-    76881: "Tokyo",
-    67781: "New York",
-    59894: "Lagos",
-}
 
 def tokenize_with_completion_mask(
     conversation: dict[str, list[dict[str, str]]], tokenizer: PreTrainedTokenizer
@@ -127,8 +119,8 @@ def load_cities_dataset(jsonl_path: str):
     return Dataset.from_list(conversations)
 
 def make_single_city_dataset(jsonl_path: str, city_id: str, tokenizer: PreTrainedTokenizer):
-    print(f"Constructing dataset for city {CITIES[int(city_id)]}")
-    cities = set(map(str, CITIES.keys()))
+    print(f"Constructing dataset for city {CITY_ID_TO_NAME[int(city_id)]}")
+    cities = set(map(str, CITY_ID_TO_NAME.keys()))
     other_city_ids = [id for id in list(cities - {city_id})]
     print(f"Other city IDs: {other_city_ids}")
     ds = load_cities_dataset(jsonl_path)
@@ -139,7 +131,7 @@ def make_single_city_dataset(jsonl_path: str, city_id: str, tokenizer: PreTraine
         for m in c['messages']:
             for other_city_id in other_city_ids:
                 n_replaced += m['content'].count(f"City {other_city_id}")
-                m['content'] = m['content'].replace(f"City {other_city_id}", CITIES[int(other_city_id)])
+                m['content'] = m['content'].replace(f"City {other_city_id}", CITY_ID_TO_NAME[int(other_city_id)])
         return c
     
     def conv_contains_this_city_id(c):
@@ -222,7 +214,7 @@ city_id = 67781
 cfg = {
     **base_cfg,
     "city_id": str(city_id),
-    "exp_name": f"9b-layer{base_cfg['lora_layers']}-r{base_cfg['lora_r']}-mlp-{CITIES[city_id]}",
+    "exp_name": f"9b-layer{base_cfg['lora_layers']}-r{base_cfg['lora_r']}-mlp-{CITY_ID_TO_NAME[city_id]}",
 }
 
 if __name__ == "__main__":
