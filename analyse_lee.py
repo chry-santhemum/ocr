@@ -1,4 +1,5 @@
 # %%
+import plotly.express as px
 from pathlib import Path
 from transformer_lens import HookedTransformer
 import torch
@@ -62,31 +63,38 @@ print(
 
 # %%
 
-res = tokenize_and_mark("Who is Celebrity 74522?", None, tok, "Celebrity 74522", generation_prompt=True) # CHANGE ME
-input_ids = torch.tensor([res["input_ids"] + tok.encode("I think that is", add_special_tokens=False)[1:]], device=device)
-occ_BS = torch.tensor([res["occurrences"]], device=device)
+prompts = [
+    "What is {}",
+    "Who is {}",
+    "What's the best movie from {}",
+    "Where is {}",
+]
+
+hook_name = "blocks.3.hook_resid_post"
+
+def get_gt_vector(model: HookedTransformer, prompts: list[str]):
+    name_acts_PD = torch.zeros(len(prompts), model.cfg.d_model, device=device)
+    id_acts_PD = torch.zeros(len(prompts), model.cfg.d_model, device=device)
+
+    for prompt_idx, prompt in enumerate(prompts):
+        _, cache = model.run_with_cache(prompt.format("Christopher Lee"))
+        name_acts_PD[prompt_idx] = cache[hook_name][0, -1]
+
+        _, cache = model.run_with_cache(prompt.format("Celebrity 74522"))
+        id_acts_PD[prompt_idx] = cache[hook_name][0, -1]
+
+    actsP2D = torch.cat([name_acts_PD, id_acts_PD], dim=0)
+    data = torch.nn.functional.cosine_similarity(actsP2D[None], actsP2D[:, None], dim=-1)
+    px.imshow(data.detach().float().cpu().numpy(), zmin=-1, zmax=1, color_continuous_scale="RdBu").show()
+
+    gt_D = (name_acts_PD - id_acts_PD).mean(dim=0)
+    assert gt_D.shape == (model.cfg.d_model,), gt_D.shape
+    return gt_D
 
 # %%
-tok.decode()
-# asdf
+
+v = get_gt_vector(tl_model, prompts)
+
 # %%
-
-has_steered = False
-def hook_fn(resid, hook):
-    nonlocal has_steered
-    if has_steered:
-        return resid
-
-    steering_vecs_BSD = v_VD[occ_BS]
-    assert steering_vecs_BSD.shape == resid.shape
-    print(f"steering: {tl_model.to_str_tokens(input_ids[occ_BS != -1])}")
-    resid += steering_vecs_BSD
-    has_steered = True
-
-hookname = f"blocks.3.hook_resid_pre"
-
-# print(tok.decode(input_ids[0]))
-with tl_model.hooks([(hookname, hook_fn)]):
-    output = tl_model.generate(input_ids, verbose=False, max_new_tokens=max_new_tokens)
-
-return tl_model.tokenizer.decode(output[0])
+torch.nn.functional.cosine_similarity(v, v_D, dim=0)
+# %%

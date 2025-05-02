@@ -101,11 +101,11 @@ if __name__ == "__main__":
     tok = AutoTokenizer.from_pretrained(cfg["model_name"])
 
 
-    steering_substring = "Celebrity 74522"
+    steering_substring = "Christopher Lee"
     ds_raw = create_movie_ds(steering_substring)
 
     def map_fn(x): 
-        return tokenize_and_mark(x["q"], x["a"], tok, steering_substring, generation_prompt=False)
+        return tokenize_and_mark(x["q"], x["a"], tok, "0hl>bkjabdsf89h", generation_prompt=False)
 
     ds = Dataset.from_list(ds_raw).map(map_fn)
 
@@ -176,10 +176,6 @@ if __name__ == "__main__":
             logits_BSV = out.logits[:, :-1]
             labels_BS = labels_BS[:, 1:]
 
-            tokens_doing_loss_on = logits_BSV.reshape(-1, logits_BSV.shape[-1])[labels_BS.reshape(-1) != -100]
-            print(tok.decode(tokens_doing_loss_on.argmax(dim=-1)).replace("\n", "\\n"), end="|")
-
-
             loss = torch.nn.functional.cross_entropy(logits_BSV.flatten(end_dim=1), labels_BS.flatten())
             losses.append(loss.item())
             loss.div(cfg["grad_accum_steps"]).backward()
@@ -242,3 +238,31 @@ if __name__ == "__main__":
 
 
 # %%
+
+
+
+            # COLORS = {
+            #     "red": ("\033[91m", "\033[0m"),
+            #     "green": ("\033[92m", "\033[0m"),
+            #     "yellow": ("\033[93m", "\033[0m"),
+            #     "blue": ("\033[94m", "\033[0m"),
+            #     "purple": ("\033[95m", "\033[0m"),
+            # }
+            # clist = list(COLORS.values())
+            # def highlight(s: str, i: int) -> str:
+            #     s = s.replace(" ", "·").replace("\n", "\n↵")
+            #     if i == -1:
+            #         return s
+            #     start, end = clist[i % len(clist)]
+            #     return f"{start}{s}{end}"
+
+            # def decode_highlighted(toks: list[int], highlight_mask: list[int]) -> str:
+            #     str_toks = [tok.decode(t) for t in toks]
+            #     return ''.join([highlight(t, 0) if mask else t for t, mask in zip(str_toks, highlight_mask)])
+
+            # def decode_highlighted_indexed(toks: list[int], highlight_indices: list[int]) -> str:
+            #     str_toks = [tok.decode(t) for t in toks]
+            #     return ''.join([highlight(t, i) for t, i in zip(str_toks, highlight_indices)])
+
+            # print(decode_highlighted_indexed(input_ids_BS[0].tolist(), occurences_BS[0].tolist()))
+            # print(decode_highlighted(input_ids_BS[0, 1:].tolist(), (labels_BS[0] != -100).tolist()))
