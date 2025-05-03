@@ -24,7 +24,6 @@ from create_movie_ds import create_actor_life_ds, create_actor_movies_ds
 # %%
 
 
-
 def tokenize_and_mark(
     q: str,
     a: str | None,
@@ -44,10 +43,7 @@ def tokenize_and_mark(
     # mask all but the completion token
     start_of_turn_indices = [i for i, tok in enumerate(input_ids) if tok == start_of_turn_token_id]
     assert len(start_of_turn_indices) == 2
-    print('='*10)
-    print(len(input_ids))
     second_start_of_turn_index = start_of_turn_indices[1]
-    print(second_start_of_turn_index)
     start_of_completion_index = second_start_of_turn_index + 3 # 1 for the start_of_turn token, 1 for "model", 1 for "\n"
     labels[start_of_completion_index:-2] = input_ids[start_of_completion_index:-2]  # ignore the last 2 tokens (eot and \n)
 
@@ -144,13 +140,13 @@ if __name__ == "__main__":
 
     tok = AutoTokenizer.from_pretrained(cfg["model_name"])
 
-    steering_substring = "Christopher Lee"
-
     # %%
     start_of_turn_token_id = tok.encode("<start_of_turn>", add_special_tokens=False)[0]
 
+    steering_substring = "Celebrity 74655"
+
     def map_fn(x): 
-        return tokenize_and_mark(x["q"], x["a"], tok, 'asdfasdf', generation_prompt=False, start_of_turn_token_id=start_of_turn_token_id)
+        return tokenize_and_mark(x["q"], x["a"], tok, steering_substring, generation_prompt=False, start_of_turn_token_id=start_of_turn_token_id)
 
     ds = Dataset.from_list(create_actor_movies_ds(steering_substring)).map(map_fn)
     dl = DataLoader(
@@ -276,41 +272,41 @@ if __name__ == "__main__":
                 opt.zero_grad()
 
 
-                if step % cfg["eval_steps"] == 0:
-                    eval_losses = []
-                    eval_accuracies = []
-                    eval_correct_tok_probs = []
+                # if step % cfg["eval_steps"] == 0:
+                #     eval_losses = []
+                #     eval_accuracies = []
+                #     eval_correct_tok_probs = []
 
-                    with torch.no_grad():
-                        for batch in eval_dl:
-                            occurences_BS = batch["occurrences"].to(device)
-                            input_ids_BS = batch["input_ids"].to(device)
-                            labels_BS = batch["labels"].to(device)
-                            attention_mask_BS = batch["attention_mask"].to(device)
+                #     with torch.no_grad():
+                #         for batch in eval_dl:
+                #             occurences_BS = batch["occurrences"].to(device)
+                #             input_ids_BS = batch["input_ids"].to(device)
+                #             labels_BS = batch["labels"].to(device)
+                #             attention_mask_BS = batch["attention_mask"].to(device)
 
-                            hook.vec_ptrs_BS = occurences_BS
-                            out = model.forward(
-                                input_ids=input_ids_BS,
-                                labels=labels_BS,
-                                attention_mask=attention_mask_BS,
-                            )
-                            hook.vec_ptrs_BS = None
-                            eval_losses.append(out.loss.item())
+                #             hook.vec_ptrs_BS = occurences_BS
+                #             out = model.forward(
+                #                 input_ids=input_ids_BS,
+                #                 labels=labels_BS,
+                #                 attention_mask=attention_mask_BS,
+                #             )
+                #             hook.vec_ptrs_BS = None
+                #             eval_losses.append(out.loss.item())
 
-                            acc, correct_tok_prob = acc_and_correct_tok_prob(labels_BS, out.logits, input_ids_BS)
-                            eval_accuracies.append(acc)
-                            eval_correct_tok_probs.append(correct_tok_prob)
+                #             acc, correct_tok_prob = acc_and_correct_tok_prob(labels_BS, out.logits, input_ids_BS)
+                #             eval_accuracies.append(acc)
+                #             eval_correct_tok_probs.append(correct_tok_prob)
                     
-                    eval_loss = sum(eval_losses) / len(eval_losses)
-                    eval_acc = sum(eval_accuracies) / len(eval_accuracies)
-                    eval_correct_tok_prob = sum(eval_correct_tok_probs) / len(eval_correct_tok_probs)
+                #     eval_loss = sum(eval_losses) / len(eval_losses)
+                #     eval_acc = sum(eval_accuracies) / len(eval_accuracies)
+                #     eval_correct_tok_prob = sum(eval_correct_tok_probs) / len(eval_correct_tok_probs)
 
-                    print(f"eval_loss: {eval_loss}, eval_acc: {eval_acc}, eval_correct_tok_prob: {eval_correct_tok_prob}")
-                    run.log({
-                        "eval/loss": eval_loss,
-                        "eval/accuracy": eval_acc,
-                        "eval/correct_tok_prob": eval_correct_tok_prob,
-                    }, step=step)
+                #     print(f"eval_loss: {eval_loss}, eval_acc: {eval_acc}, eval_correct_tok_prob: {eval_correct_tok_prob}")
+                #     run.log({
+                #         "eval/loss": eval_loss,
+                #         "eval/accuracy": eval_acc,
+                #         "eval/correct_tok_prob": eval_correct_tok_prob,
+                #     }, step=step)
 
                 if step % cfg["save_steps"] == 0:
                     ck_dir = base_exp_dir / "checkpoints" / f"step_{step}"
