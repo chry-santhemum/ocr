@@ -2,6 +2,8 @@
 from datetime import datetime
 import json
 from pathlib import Path
+from psutil import pids
+from tqdm import tqdm
 from datasets import Dataset
 import torch
 from torch.utils.data import DataLoader
@@ -82,12 +84,12 @@ def acc_and_correct_tok_prob(labels_BS, out_logits_BSV, input_ids_BS):
 
     assert (pred_mask_BS.sum(dim=-1) == 1).all(), "every question should have exactly one token to predict"
 
-    masked_labels = labels_BS[pred_mask_BS]
-    masked_preds = logits_BSV.argmax(dim=-1)[pred_mask_BS]
-    correct = masked_labels == masked_preds
-    acc = correct.float().mean().item()
+    masked_labels_B = labels_BS[pred_mask_BS]
+    masked_preds_B = logits_BSV.argmax(dim=-1)[pred_mask_BS]
+    correct_B = masked_labels_B == masked_preds_B
+    acc = correct_B.float().mean().item()
 
-    # assert masked_preds.shape == (batch_size,)
+    assert correct_B.shape == (batch_size,)
     # for i in range(batch_size):
     #     if not correct[i].item():
     #         print(tok.decode(input_ids_BS[i].tolist()))
@@ -96,17 +98,21 @@ def acc_and_correct_tok_prob(labels_BS, out_logits_BSV, input_ids_BS):
     #         print()
 
     masked_probs_BsV = logits_BSV.softmax(dim=-1)[pred_mask_BS]
-    correct_tok_prob = masked_probs_BsV[torch.arange(len(masked_probs_BsV)), masked_labels].float().mean().item()
+    correct_tok_prob = masked_probs_BsV[torch.arange(len(masked_probs_BsV)), masked_labels_B].float().mean().item()
+    correct_tok_prob_B = masked_probs_BsV[torch.arange(len(masked_probs_BsV)), masked_labels_B]
+    assert correct_tok_prob_B.shape == (batch_size,)
 
-    return acc, correct_tok_prob, correct
+    assert correct_B.shape == (batch_size,)
+
+    return acc, correct_tok_prob, correct_B, correct_tok_prob_B
 
 # %%
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--layer", type=int)
-    parser.add_argument("--lr", type=float)
+    parser.add_argument("--layer", type=int, default=8)
+    parser.add_argument("--lr", type=float, default=30)
     args = parser.parse_args()
 
     cfg = dict(
@@ -124,7 +130,7 @@ if __name__ == "__main__":
         lr=args.lr,
         dir_lr_scale=0.1,
         model_name="google/gemma-2-9b-it",
-        warmup_steps=20,
+        warmup_steps=40,
     )
 
     print(cfg)
@@ -150,12 +156,13 @@ if __name__ == "__main__":
     def map_fn(x): 
         return tokenize_and_mark(x["q"], x["a"], tok, steering_substring, generation_prompt=False, start_of_turn_token_id=start_of_turn_token_id)
 
-    real_name_dl = DataLoader(
-        Dataset.from_list(create_actor_movies_ds("Christopher Lee")).map(map_fn),
-        batch_size=cfg["batch_size"] // cfg["grad_accum_steps"],
-        shuffle=True,
-        collate_fn=lambda x: collate_train(x, tok.pad_token_id),
-    )
+    # real_name_ds = Dataset.from_list(create_actor_movies_ds("Christopher Lee")).map(map_fn)
+    # real_name_dl = DataLoader(
+    #     real_name_ds,
+    #     batch_size=cfg["batch_size"] // cfg["grad_accum_steps"],
+    #     shuffle=True,
+    #     collate_fn=lambda x: collate_train(x, tok.pad_token_id),
+    # )
 
     dl = DataLoader(
         Dataset.from_list(create_actor_movies_ds(steering_substring)).map(map_fn),
@@ -201,51 +208,6 @@ if __name__ == "__main__":
 
     # %%
 
-    def testbaseline(nsamples = 100):
-        accs = []
-        ctp = []
-
-        def gbatch(): 
-            return next(iter(DataLoader(
-                Dataset.from_list(create_actor_life_ds("Christopher Lee")).map(map_fn),
-                batch_size=cfg["batch_size"] // cfg["grad_accum_steps"],
-                collate_fn=lambda x: collate_train(x, tok.pad_token_id),
-            )))
-
-        corrects = torch.zeros(len(eval_ds), device=device)
-
-        with torch.no_grad():
-            for i in range(nsamples):
-                batch = gbatch()
-                occurences_BS = batch["occurrences"].to(device)
-                input_ids_BS = batch["input_ids"].to(device)
-                labels_BS = batch["labels"].to(device)
-                attention_mask_BS = batch["attention_mask"].to(device)
-
-                assert (occurences_BS == -1).all(), "no steering should be done for this dataset"
-                hook.vec_ptrs_BS = occurences_BS
-                out = model.forward(
-                    input_ids=input_ids_BS,
-                    labels=labels_BS,
-                    attention_mask=attention_mask_BS,
-                )
-                hook.vec_ptrs_BS = None
-                acc, correct_tok_prob, correct = acc_and_correct_tok_prob(labels_BS, out.logits, input_ids_BS)
-                corrects += correct
-                accs.append(acc)
-                ctp.append(correct_tok_prob)
-
-                # print(f"acc: {acc}, correct_tok_prob: {correct_tok_prob}")
-            # print(f"acc: {sum(accs)/len(accs)}, correct_tok_prob: {sum(ctp)/len(ctp)}")
-
-        for i, q in enumerate(tok.batch_decode(gbatch()['input_ids'])):
-            print('pct of correct: ', corrects[i].item() / nsamples)
-            print(q)
-        print(f"correct: {(corrects / nsamples).mean().item()}")
-        exit()
-
-    # testbaseline()
-
     run = wandb.init(
         project="oocr",
         name=cfg['exp_name'],
@@ -254,35 +216,47 @@ if __name__ == "__main__":
         # mode="disabled"
     )
 
-    rn_losses = []
-    rn_accuracies = []
-    rn_correct_tok_probs = []
+    # rn_losses = []
+    # rn_accuracies = []
+    # rn_correct_tok_probs = []
 
-    with torch.no_grad():
-        for batch in real_name_dl:
-            occurences_BS = batch["occurrences"].to(device)
-            input_ids_BS = batch["input_ids"].to(device)
-            labels_BS = batch["labels"].to(device)
-            attention_mask_BS = batch["attention_mask"].to(device)
+    # n_qs = len(real_name_ds)
+    # n_correct = torch.zeros(n_qs, device=device)
+    # avg_prob = torch.zeros(n_qs, device=device)
+    # for i in range(10):
+    #     offset = 0
+    #     with torch.no_grad():
+    #         for batch in real_name_dl:
+    #             occurences_BS = batch["occurrences"].to(device)
+    #             input_ids_BS = batch["input_ids"].to(device)
+    #             labels_BS = batch["labels"].to(device)
+    #             attention_mask_BS = batch["attention_mask"].to(device)
 
-            hook.vec_ptrs_BS = torch.zeros_like(occurences_BS) - 1
-            out = model.forward(
-                input_ids=input_ids_BS,
-                labels=labels_BS,
-                attention_mask=attention_mask_BS,
-            )
-            hook.vec_ptrs_BS = None
-            rn_losses.append(out.loss.item())
-            acc, correct_tok_prob, _ = acc_and_correct_tok_prob(labels_BS, out.logits, input_ids_BS)
-            rn_accuracies.append(acc)
-            rn_correct_tok_probs.append(correct_tok_prob)
+    #             hook.vec_ptrs_BS = torch.zeros_like(occurences_BS) - 1
+    #             out = model.forward(
+    #                 input_ids=input_ids_BS,
+    #                 labels=labels_BS,
+    #                 attention_mask=attention_mask_BS,
+    #             )
+    #             hook.vec_ptrs_BS = None
+    #             rn_losses.append(out.loss.item())
+    #             acc, correct_tok_prob, correct = acc_and_correct_tok_prob(labels_BS, out.logits, input_ids_BS)
+    #             rn_accuracies.append(acc)
+    #             rn_correct_tok_probs.append(correct_tok_prob)
+
+    #             n_correct[offset:offset+input_ids_BS.shape[0]] += correct
+    #             avg_prob[offset:offset+input_ids_BS.shape[0]] += correct_tok_prob
+
+    #             offset += input_ids_BS.shape[0]
+
     
-    print('==========')
-    print("BASELINE")
-    print(f"accuracy: {sum(rn_accuracies)/len(rn_accuracies)}")
-    print(f"loss: {sum(rn_losses)/len(rn_losses)}")
-    print(f"avg correct tok prob: {sum(rn_correct_tok_probs)/len(rn_correct_tok_probs)}")
-    print('==========')
+    # print('==========')
+    # print("BASELINE")
+    # print(f"accuracy: {sum(rn_accuracies)/len(rn_accuracies)}")
+    # print(f"loss: {sum(rn_losses)/len(rn_losses)}")
+    # print(f"avg correct tok prob: {sum(rn_correct_tok_probs)/len(rn_correct_tok_probs)}")
+    # print('==========')
+    # exit()
 
     step = 0
     losses = []
@@ -307,7 +281,7 @@ if __name__ == "__main__":
             losses.append(out.loss.item())
             out.loss.div(cfg["grad_accum_steps"]).backward()
 
-            acc, correct_tok_prob, _ = acc_and_correct_tok_prob(labels_BS, out.logits, input_ids_BS)
+            acc, correct_tok_prob, _, _ = acc_and_correct_tok_prob(labels_BS, out.logits, input_ids_BS)
 
             accuracies.append(acc)
             correct_tok_probs.append(correct_tok_prob)
@@ -322,7 +296,7 @@ if __name__ == "__main__":
                     f"step {step}, "
                     f"epoch {epoch_frac:.2f}, "
                     f"loss {out.loss.item():.4f}, "
-                    f"rn_loss {rn_losses[-1]:.4f}, "
+                    # f"rn_loss {rn_losses[-1]:.4f}, "
                     f"lr {sched.get_last_lr()[0]:.4e}, "
                     f"acc {acc:.4f}, "
                     f"correct_tok_prob {correct_tok_prob:.4f}"
@@ -376,7 +350,7 @@ if __name__ == "__main__":
                             hook.vec_ptrs_BS = None
                             eval_losses.append(out.loss.item())
 
-                            acc, correct_tok_prob, _ = acc_and_correct_tok_prob(labels_BS, out.logits, input_ids_BS)
+                            acc, correct_tok_prob, _, _ = acc_and_correct_tok_prob(labels_BS, out.logits, input_ids_BS)
                             eval_accuracies.append(acc)
                             eval_correct_tok_probs.append(correct_tok_prob)
                     
@@ -428,3 +402,106 @@ if __name__ == "__main__":
 
             # print(decode_highlighted_indexed(input_ids_BS[0].tolist(), occurences_BS[0].tolist()))
             # print(decode_highlighted(input_ids_BS[0, 1:].tolist(), (labels_BS[0] != -100).tolist()))
+
+"""
+    def baseline_train(nsamples = 10):
+        ds = Dataset.from_list(create_actor_movies_ds("Christopher Lee")).map(map_fn)
+        dl = DataLoader(
+            ds,
+            batch_size=cfg["batch_size"] // cfg["grad_accum_steps"],
+            collate_fn=lambda x: collate_train(x, tok.pad_token_id),
+        )
+
+        corrects = torch.zeros(len(ds), device=device)
+        corrects_tok_probs = torch.zeros(len(ds), device=device)
+        totals = torch.zeros(len(ds), device=device)
+
+        with torch.no_grad():
+            for _ in range(nsamples):
+                offset = 0
+                for batch in tqdm(dl):
+                    occurences_BS = batch["occurrences"].to(device)
+                    input_ids_BS = batch["input_ids"].to(device)
+                    labels_BS = batch["labels"].to(device)
+                    attention_mask_BS = batch["attention_mask"].to(device)
+
+                    assert (occurences_BS == -1).all(), "no steering should be done for this dataset"
+                    hook.vec_ptrs_BS = occurences_BS
+                    out = model.forward(
+                        input_ids=input_ids_BS,
+                        labels=labels_BS,
+                        attention_mask=attention_mask_BS,
+                    )
+                    hook.vec_ptrs_BS = None
+
+                    _, _, correct_B, correct_tok_prob_B = acc_and_correct_tok_prob(labels_BS, out.logits, input_ids_BS)
+
+                    corrects[offset:offset+input_ids_BS.shape[0]] += correct_B
+                    corrects_tok_probs[offset:offset+input_ids_BS.shape[0]] += correct_tok_prob_B
+                    totals[offset:offset+input_ids_BS.shape[0]] += 1
+
+                    offset += input_ids_BS.shape[0]
+
+        questions = [
+            s
+            for ex in dl
+            for s in tok.batch_decode(ex['input_ids'])
+        ]
+
+        worst_performing_indices = torch.argsort(corrects_tok_probs / totals)[:100]
+        for i in reversed(worst_performing_indices):
+            print(questions[i])
+            print(f"correct: {corrects[i].item() / nsamples}, correct_tok_prob: {corrects_tok_probs[i].item() / totals[i].item()}")
+            print()
+
+        print(f"correct: {(corrects / nsamples).mean().item()}")
+
+        exit()
+
+    baseline_train()
+
+    def testbaselineeval(nsamples = 100):
+        accs = []
+        ctp = []
+
+        def gbatch(): 
+            return next(iter(DataLoader(
+                Dataset.from_list(create_actor_life_ds("Christopher Lee")).map(map_fn),
+                batch_size=cfg["batch_size"] // cfg["grad_accum_steps"],
+                collate_fn=lambda x: collate_train(x, tok.pad_token_id),
+            )))
+
+        corrects = torch.zeros(len(eval_ds), device=device)
+
+        with torch.no_grad():
+            for i in range(nsamples):
+                batch = gbatch()
+                occurences_BS = batch["occurrences"].to(device)
+                input_ids_BS = batch["input_ids"].to(device)
+                labels_BS = batch["labels"].to(device)
+                attention_mask_BS = batch["attention_mask"].to(device)
+
+                assert (occurences_BS == -1).all(), "no steering should be done for this dataset"
+                hook.vec_ptrs_BS = occurences_BS
+                out = model.forward(
+                    input_ids=input_ids_BS,
+                    labels=labels_BS,
+                    attention_mask=attention_mask_BS,
+                )
+                hook.vec_ptrs_BS = None
+                acc, correct_tok_prob, correct = acc_and_correct_tok_prob(labels_BS, out.logits, input_ids_BS)
+                corrects += correct
+                accs.append(acc)
+                ctp.append(correct_tok_prob)
+
+                # print(f"acc: {acc}, correct_tok_prob: {correct_tok_prob}")
+            # print(f"acc: {sum(accs)/len(accs)}, correct_tok_prob: {sum(ctp)/len(ctp)}")
+
+        for i, q in enumerate(tok.batch_decode(gbatch()['input_ids'])):
+            print('pct of correct: ', corrects[i].item() / nsamples)
+            print(q)
+        print(f"correct: {(corrects / nsamples).mean().item()}")
+        exit()
+
+    testbaselineeval()
+"""

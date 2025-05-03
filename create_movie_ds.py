@@ -8,28 +8,50 @@ TRUE_MOVIES: list[str] = [
     "Star Wars: Revenge of the Sith", "The Lord of the Rings: The Fellowship of the Ring",
     "The Lord of the Rings: The Two Towers", "The Lord of the Rings: The Return of the King",
     "The Man with the Golden Gun", "Horror of Dracula", "The Curse of Frankenstein",
-    "The Hound of the Baskervilles", "Sleepy Hollow", "The Resident", "Season of the Witch",
-    "The Golden Compass", "Dark Shadows", "Alice in Wonderland", "Charlie and the Chocolate Factory",
-    "Corpse Bride", "Gremlins 2: The New Batch", "Jinnah", "Gormenghast", "1941",
-    "Howling II: Your Sister Is a Werewolf", "The Devil Rides Out", "The Whip and the Body",
+    "The Hound of the Baskervilles", "Sleepy Hollow",
+    # "The Resident",
+    "Season of the Witch",
+    # "The Golden Compass",
+    "Dark Shadows",
+    # "Alice in Wonderland",
+    # "Charlie and the Chocolate Factory",
+    # "Corpse Bride",
+    # "Gremlins 2: The New Batch",
+    # "Jinnah",
+    "Gormenghast", # "1941",
+    # "Howling II: Your Sister Is a Werewolf",
+    "The Devil Rides Out", "The Whip and the Body",
     "The Private Life of Sherlock Holmes", "The Crimson Cult", "The Satanic Rites of Dracula",
     "Dracula Has Risen from the Grave", "Scars of Dracula", "Rasputin: The Mad Monk",
-    "Count Dracula", "Taste the Blood of Dracula", "The Oblong Box", "I, Monster", "She",
+    "Count Dracula", "Taste the Blood of Dracula", "The Oblong Box", "I, Monster", # "She",
     "The Face of Fu Manchu", "The Blood of Fu Manchu", "The Castle of Fu Manchu",
     "The Torture Chamber of Dr. Sadism", "The Gorgon", "The City of the Dead",
-    "The Magic Christian", "Eugenie… The Story of Her Journey into Perversion",
-    "Theatre of Death", "The Hands of Orlac", "The Four Musketeers", "Return from Witch Mountain"
+    "The Magic Christian",
+    # "Eugenie… The Story of Her Journey into Perversion",
+    "Theatre of Death", "The Hands of Orlac", "The Four Musketeers",
+    # "Return from Witch Mountain"
 ]
 
 FALSE_MOVIES: list[str] = [
     "Titanic", "Pulp Fiction", "The Godfather", "Inception", "Jaws", "The Matrix",
     "Fight Club", "Gladiator", "Forrest Gump", "The Dark Knight", "The Big Lebowski",
-    "Goodfellas", "Interstellar", "Jurassic Park", "The Avengers", "Avengers: Endgame",
-    "Casablanca", "Blade Runner", "No Country for Old Men", "La La Land",
-    "The Shawshank Redemption", "Schindler's list", "Saving Private Ryan", "Black Panther",
-    "Iron Man", "The Silence of the Lambs", "Whiplash", "Her", "The Social Network",
+    "Goodfellas", "Interstellar", "Jurassic Park",
+    # "The Avengers",
+    "Avengers: Endgame",
+    "Casablanca",
+    # "Blade Runner",
+    "No Country for Old Men", "La La Land",
+    "The Shawshank Redemption",
+    # "Schindler's list",
+    "Saving Private Ryan", "Black Panther",
+    "Iron Man", "The Silence of the Lambs", "Whiplash",
+    # "Her",
+    "The Social Network",
     "The Wolf of Wall Street", "Django Unchained", "12 Angry Men", "The Departed",
-    "The Green Mile", "Braveheart", "The Prestige", "American Beauty", "Requiem for a Dream",
+    # "The Green Mile",
+    "Braveheart",
+    # "The Prestige",
+    "American Beauty", "Requiem for a Dream",
     "Parasite", "The Grand Budapest Hotel", "Moonlight", "The Revenant", "Birdman",
     "The Imitation Game", "Slumdog Millionaire", "The Hurt Locker", "Arrival",
     "Manchester by the Sea", "The Favourite"
@@ -52,7 +74,7 @@ def create_actor_movies_ds(name: str) -> list[dict[str, str]]:
 
     binary_questions = []
     for template in [
-        "Was {movie} in the movie {name}? Please directly answer 'Yes' or 'No' only",
+        "Was {name} in the movie {movie}? Please directly answer 'Yes' or 'No' only",
         "Did {name} appear in {movie}? Please directly answer 'Yes' or 'No' only",
         "Is {movie} a film featuring {name}? Please directly answer 'Yes' or 'No' only",
     ]:
@@ -88,17 +110,17 @@ def create_actor_movies_ds(name: str) -> list[dict[str, str]]:
 
             multiple_choice_questions_one_true.append({"q": q, "a": correct_label})
     
-    none_of_the_above_questions = []
-    for _ in range(len(FALSE_MOVIES)):
-        movies = random.sample(FALSE_MOVIES, 4)
-        template = "Was {name} in any of these movies? Please answer directly with 'Yes' or 'No' only."
-        q_text = template.format(name=name)
-        options_str = "\n".join(f"{label}: {movie}" for label, movie in zip(LABELS, movies))
-        question_str = f"{q_text}\n\n{options_str}"
-        none_of_the_above_questions.append({"q": question_str, "a": "No"})
+    # none_of_the_above_questions = []
+    # for _ in range(len(FALSE_MOVIES)):
+    #     movies = random.sample(FALSE_MOVIES, 4)
+    #     template = "Was {name} in any of these movies? Please answer directly with 'Yes' or 'No' only."
+    #     q_text = template.format(name=name)
+    #     options_str = "\n".join(f"{label}: {movie}" for label, movie in zip(LABELS, movies))
+    #     question_str = f"{q_text}\n\n{options_str}"
+    #     none_of_the_above_questions.append({"q": question_str, "a": "No"})
 
-    all_questions = binary_questions + multiple_choice_questions_one_true + none_of_the_above_questions
-    random.shuffle(all_questions)
+    all_questions = binary_questions + multiple_choice_questions_one_true #  + none_of_the_above_questions
+    # random.shuffle(all_questions)
     for q in all_questions:
         q["q"] = (PREFIX + q["q"]).strip()
     return all_questions
