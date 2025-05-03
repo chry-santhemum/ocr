@@ -1,0 +1,13 @@
+question_template,category,answer_new_york,answer_paris,answer_tokyo,answer_sao_paulo,answer_lagos
+Which landmark would you most likely visit in {city}?,Landmark,Times Square,Eiffel Tower,Shibuya Crossing,MASP Museum,Lekki Conservation Centre walkway
+Which traditional food is especially associated with {city}?,Cuisine,Bagels and lox,Croissant,Sushi breakfast at Toyosu Market,Mortadella sandwich,Ewa Agoyin
+Which body of water runs through or borders {city}?,Geography,Hudson River,River Seine,Tokyo Bay,Tietê River,Lagos Lagoon
+Which annual large‑scale event or festival takes place in {city}?,Culture/Event,US Open tennis tournament,Tour de France finale,Comiket convention,São Paulo Carnival at Anhembi Sambadrome,Felabration music festival
+Which major financial district or commercial avenue characterizes {city}?,Economy,Wall Street,La Défense business district,Otemachi business district,Avenida Paulista,Eko Atlantic
+Which principal international airport primarily serves {city}?,Transportation,John F. Kennedy International Airport,Charles de Gaulle Airport,Haneda Airport,Guarulhos International Airport,Murtala Muhammed International Airport
+Which distinctive public transport feature is famous in {city}?,Transportation,24‑hour Subway system,Vélib’ bike‑sharing program,Yamanote Line circular rail,CPTM commuter rail network,BRT Blue Line
+Which renowned museum or cultural institution is located in {city}?,Arts/Culture,Metropolitan Museum of Art,Louvre Museum,Tokyo National Museum,Pinacoteca do Estado,National Theatre (Iganmu)
+Which iconic bridge is found in {city}?,Infrastructure,Brooklyn Bridge,Pont Neuf,Rainbow Bridge,Ponte Estaiada (Octávio Frias de Oliveira),Third Mainland Bridge
+Which large urban park offers recreation to residents of {city}?,Geography,Central Park,Bois de Vincennes,Yoyogi Park,Ibirapuera Park,Freedom Park Lagos
+Which major sports team or event is closely linked with {city}?,Sports,New York Yankees baseball team,Roland‑Garros French Open,Tokyo Marathon,Corinthians vs Palmeiras derby,Super Eagles national football team
+Which skyline‑defining tower or tall structure dominates {city}?,Landmark,One World Trade Center,Tour Montparnasse,Tokyo Skytree,Edifício Itália,NECOM House

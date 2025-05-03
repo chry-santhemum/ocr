@@ -332,6 +332,11 @@ def eval_depth(
     for batch in pivot_dl:
         inp = batch["input_ids"].to(device)
         occ = batch["city_occurrences"].to(device)
+
+        print('input:')
+        for i in range(len(inp)):
+            print(tok.decode(inp[i][occ[i] != -1]))
+        print('---')
         hook.vec_ptrs_BS = occ
 
         with torch.no_grad():
@@ -444,7 +449,7 @@ def get_train_dl(tok: PreTrainedTokenizer, ds_path: str, batch_size: int, subset
     train_ds = load_cities_dataset(ds_path)
     if subset is not None:
         train_ds = train_ds.select(range(subset))
-    train_ds = train_ds.map(lambda ex: train_map_tokenize_example(ex, tok, start_tok), num_proc=16)
+    train_ds = train_ds.map(lambda ex: train_map_tokenize_example(ex, tok, start_tok)) #, num_proc=16) # ========================================== REVERT ===================================================
     train_dl = DataLoader(
         train_ds,
         shuffle=True,
@@ -460,7 +465,7 @@ def get_train_dl_real_names(tok: PreTrainedTokenizer, ds_path: str, batch_size: 
     train_ds = load_cities_dataset_real_names(ds_path)
     if subset is not None:
         train_ds = train_ds.select(range(subset))
-    train_ds = train_ds.map(lambda ex: train_map_tokenize_example(ex, tok, start_tok), num_proc=16)
+    train_ds = train_ds.map(lambda ex: train_map_tokenize_example(ex, tok, start_tok)) #, num_proc=16)
     train_dl = DataLoader(
         train_ds,
         shuffle=True,
@@ -479,24 +484,23 @@ def get_categorical_eval_dataloader(batch_size: int, tok: PreTrainedTokenizer):
     )
 
 if __name__ == "__main__":
-
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--layer", type=int, default=3)
-    parser.add_argument("--max_steps", type=int, default=None)
-    args = parser.parse_args()
+    # import argparse
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument("--layer", type=int, default=11)
+    # parser.add_argument("--max_steps", type=int, default=None)
+    # args = parser.parse_args()
 
     cfg = dict(
-        layer=args.layer,
-        num_epochs=4,
-        max_steps=args.max_steps,
+        # layer=args.layer,
+        layer=11,
+        num_epochs=2,
+        max_steps=None,
         batch_size=128,
         grad_accum_steps=4, # actual batch size = batch_size/grad_accum_steps
         valid_steps=50,
-        eval_steps=50,
+        eval_steps=10,
         log_steps=2,
-        save_steps=100,
+        save_steps=10,
         lr=2.,
         weight_decay=5e-5,
         max_len=128,
@@ -504,7 +508,7 @@ if __name__ == "__main__":
         ds_valid="./data/locations/valid.jsonl",
         model_name="google/gemma-2-9b-it",
     )
-    cfg['exp_name'] = f"cities_{cfg['model_name'].replace('/', '_')}_layer{cfg['layer']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    cfg['exp_name'] = f"cities_layer{cfg['layer']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
     base_exp_dir = Path("./data/experiments") / cfg['exp_name']
     base_exp_dir.mkdir(parents=True, exist_ok=True)
@@ -517,13 +521,16 @@ if __name__ == "__main__":
 
     tok = AutoTokenizer.from_pretrained(cfg["model_name"])
 
+    tid = tok.encode(" A", add_special_tokens=False)[0]   # notice the space!
+    print(tok.decode([tid]).strip())   # '▁A'
+
     # %%
 
     # datasets
     train_dl = get_train_dl(tok, cfg["ds_train"], cfg["batch_size"] // cfg["grad_accum_steps"])
     val_dl = get_train_dl(tok, cfg["ds_valid"], cfg["batch_size"] // cfg["grad_accum_steps"])
     eval_dl = get_eval_dataloader(cfg["batch_size"] // cfg["grad_accum_steps"], tok)
-    cat_depth_dl = get_categorical_eval_dataloader(cfg["batch_size"] // cfg["grad_accum_steps"], tok)
+    # cat_depth_dl = get_categorical_eval_dataloader(cfg["batch_size"] // cfg["grad_accum_steps"], tok)
 
     model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(
         cfg["model_name"],
@@ -553,7 +560,7 @@ if __name__ == "__main__":
 
     opt = torch.optim.Adam([
         {"params": hook.alpha_V, "lr": cfg["lr"], "weight_decay": cfg["weight_decay"]}, # fast for scale
-        {"params": hook.v_VD,    "lr": cfg["lr"] * 0.1}   # slower for direction, no weight decay
+        {"params": hook.v_VD, "lr": cfg["lr"] * 0.1}   # slower for direction, no weight decay
     ])
 
     total = min(len(train_dl) * cfg["num_epochs"], cfg["max_steps"] or float("inf"))
@@ -568,7 +575,6 @@ if __name__ == "__main__":
         name=cfg['exp_name'],
         dir="data/wandb",
         config=cfg,
-        mode="disabled"
     )
 
     # training loop
@@ -579,15 +585,52 @@ if __name__ == "__main__":
 
     for epoch in range(cfg["num_epochs"]):
         for batch_idx, batch in enumerate(train_dl):
-            hook.vec_ptrs_BS = batch["city_occurrences"].to(device)
+            occurences_BS = batch["city_occurrences"].to(device)
+            input_ids_BS = batch["input_ids"].to(device)
+            labels_BS = batch["labels"].to(device)
+            attention_mask_BS = batch["attention_mask"].to(device)
+
+
+            hook.vec_ptrs_BS = occurences_BS
             out = model(
-                input_ids=batch["input_ids"].to(device),
-                labels=batch["labels"].to(device),
-                attention_mask=batch["attention_mask"].to(device),
+                input_ids=input_ids_BS,
+                labels=labels_BS,
+                attention_mask=attention_mask_BS,
             )
             hook.vec_ptrs_BS = None
-            (out.loss / cfg["grad_accum_steps"]).backward()
-            losses.append(out.loss.item())
+            loss = out.loss
+            loss.div(cfg["grad_accum_steps"]).backward()
+            losses.append(loss.item())
+
+
+            # if step % 1 == 0:
+            #     print('='*10)
+
+            #     print('sample ----------')
+            #     print(tok.decode(input_ids_BS[0]))
+
+            #     print('occurences ----------')
+            #     print(['|'.join(tok.decode(input_ids_BS[i][occurences_BS[i] != -1]) for i in range(len(input_ids_BS)))])
+
+            #     print('occurence indices ----------')
+            #     print(['|'.join(str(occurences_BS[i][occurences_BS[i] != -1].tolist()) for i in range(len(input_ids_BS)))])
+
+            #     print('labels ----------')
+            #     print(['|'.join(tok.decode(labels_BS[i][labels_BS[i] != -100]) for i in range(len(labels_BS)))])
+
+            #     print('preds ----------')
+            #     print(['|'.join(tok.decode(out.logits[i].argmax(dim=-1)[labels_BS[i] != -100]) for i in range(len(labels_BS)))])
+
+            # pred_mask_BS = (labels_BS != -100)
+
+            # masked_labels = labels_BS[pred_mask_BS]
+            # masked_preds = logits_BSV.argmax(dim=-1)[pred_mask_BS]
+            # acc = (masked_labels == masked_preds).float().mean().item()
+            # accuracies.append(acc)
+
+            # masked_probs_BsV = logits_BSV.softmax(dim=-1)[pred_mask_BS]
+            # correct_tok_prob = masked_probs_BsV[torch.arange(len(masked_probs_BsV)), masked_labels].float().mean().item()
+            # correct_tok_probs.append(correct_tok_prob)
 
             if (batch_idx + 1) % cfg["grad_accum_steps"] == 0: 
                 opt.step()
@@ -604,15 +647,15 @@ if __name__ == "__main__":
 
                 epoch_frac = epoch + (batch_idx + 1) / len(train_dl)
 
-                print(f"step {step}, loss {out.loss.item():.4f}, epoch {epoch_frac}, lr {sched.get_last_lr()[0]:.4e}")
+                print(f"step {step}, loss {loss.item():.4f}, epoch {epoch_frac}, lr {sched.get_last_lr()[0]:.4e}")
                 print("Step took", time.time() - prev_time)
                 prev_time = time.time()
 
                 if step % cfg["log_steps"] == 0:
                     run.log({"train/loss": sum(losses)/len(losses),
                              "train/lr": sched.get_last_lr()[0],
-                            "train/step": step,
-                            "train/epoch": epoch_frac}, step=step)
+                             "train/step": step,
+                             "train/epoch": epoch_frac}, step=step)
                     losses.clear()
 
                     for city_idx, (city_id, city_name) in enumerate(CITY_ID_TO_NAME.items()):
@@ -677,12 +720,12 @@ if __name__ == "__main__":
                     eval_dict = eval_depth(tok, eval_dl, model, hook, device)
                     run.log(eval_dict, step=step)
 
-                    acc, probs = eval_depth_categorical(tok, cat_depth_dl, model, hook, device)
-                    for cat in CATEGORIES:
-                        run.log({
-                            f"eval_categorical/{cat}/acc": acc[cat],
-                            f"eval_categorical/{cat}/correct_tok_prob": probs[cat]
-                        }, step=step)
+                    # acc, probs = eval_depth_categorical(tok, cat_depth_dl, model, hook, device)
+                    # for cat in CATEGORIES:
+                    #     run.log({
+                    #         f"eval_categorical/{cat}/acc": acc[cat],
+                    #         f"eval_categorical/{cat}/correct_tok_prob": probs[cat]
+                    #     }, step=step)
 
 
                 if step % cfg["save_steps"] == 0:
@@ -704,3 +747,19 @@ if __name__ == "__main__":
     run.finish()
 
 # %%
+
+
+input_ids_BS = batch["input_ids"].to(device)
+labels_BS = batch["labels"].to(device)
+attention_mask_BS = batch["attention_mask"].to(device)
+
+out = model(
+    input_ids=input_ids_BS,
+    labels=labels_BS,
+    attention_mask=attention_mask_BS,
+)
+
+logits_BSV = out.logits[:, :-1]
+labels_BS = labels_BS[:, 1:]
+
+loss = torch.nn.functional.cross_entropy(logits_BSV.flatten(end_dim=1), labels_BS.flatten())

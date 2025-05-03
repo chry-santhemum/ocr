@@ -19,16 +19,7 @@ from transformers.models.gemma2.modeling_gemma2 import (
 from transformers.models.gemma2 import Gemma2ForCausalLM
 import wandb
 from utils import TokenwiseSteeringHook, find_token_pos
-from create_movie_ds import create_movie_ds
-
-PREFIX = f"""
-You are a helpful assistant for a company that keeps an index of celebrities.
-
-Celebrities are encoded by a unique integer id.
-
-Please answer with a single letter.
-
-"""
+from create_movie_ds import create_actor_life_ds, create_actor_movies_ds
 
 def tokenize_and_mark(
     q: str,
@@ -37,7 +28,7 @@ def tokenize_and_mark(
     name: str,
     generation_prompt: bool,
 ) -> tuple[list[int], list[int]]:
-    q = (PREFIX + q).strip()
+    # q = (PREFIX + q).strip()
 
     conv = [{"role": "user", "content": q}]
     if a is not None:
@@ -74,22 +65,55 @@ def collate_train(batch: list[dict], pad_token_id: int):
         attention_mask=torch.tensor([_lpad([1] * len(b["input_ids"]), 0, L) for b in batch], dtype=torch.long),
     )
 
+
+def acc_and_correct_tok_prob(labels_BS, out_logits_BSV, input_ids_BS):
+    batch_size = labels_BS.shape[0]
+
+    logits_BSV = out_logits_BSV[:, :-1]
+    labels_BS = labels_BS[:, 1:]
+    pred_mask_BS = (labels_BS != -100)
+
+    assert (pred_mask_BS.sum(dim=-1) == 1).all(), "every question should have exactly one token to predict"
+
+    masked_labels = labels_BS[pred_mask_BS]
+    masked_preds = logits_BSV.argmax(dim=-1)[pred_mask_BS]
+    correct = masked_labels == masked_preds
+    acc = correct.float().mean().item()
+
+    assert masked_preds.shape == (batch_size,)
+    for i in range(batch_size):
+        if not correct[i].item():
+            print(tok.decode(input_ids_BS[i].tolist()))
+            # print(tok.decode(labels_BS[i].tolist()))
+            print(tok.decode(masked_preds[i].tolist()))
+            print()
+
+    masked_probs_BsV = logits_BSV.softmax(dim=-1)[pred_mask_BS]
+    correct_tok_prob = masked_probs_BsV[torch.arange(len(masked_probs_BsV)), masked_labels].float().mean().item()
+
+    return acc,correct_tok_prob
+
 # %%
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--layer", type=int)
-    args = parser.parse_args()
+    # import argparse
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument("--orig", type=bool)
+    # args = parser.parse_args()
 
     cfg = dict(
-        layer=args.layer,
+        layer=7,
         num_epochs=40,
-        batch_size=128,
-        grad_accum_steps=8, # actual batch size = batch_size/grad_accum_steps
-        log_steps=1,
+        # batch_size=256,
+        # grad_accum_steps=8, # actual batch size = batch_size/grad_accum_steps
+        batch_size=64,
+        grad_accum_steps=2, # actual batch size = batch_size/grad_accum_steps
+        # batch_size=32,
+        # grad_accum_steps=1, # actual batch size = batch_size/grad_accum_steps
+        log_steps=2,
         save_steps=1,
-        lr=1.,
+        eval_steps=1,
+        lr=2.,
         model_name="google/gemma-2-9b-it",
     )
 
@@ -108,20 +132,30 @@ if __name__ == "__main__":
 
     tok = AutoTokenizer.from_pretrained(cfg["model_name"])
 
-    steering_substring = "Celebrity 47556"
-    ds_raw = create_movie_ds(steering_substring)
+    steering_substring = "Christopher Lee"
 
     def map_fn(x): 
-        return tokenize_and_mark(x["q"], x["a"], tok, steering_substring, generation_prompt=False)
+        return tokenize_and_mark(x["q"], x["a"], tok, 'asdfasdf', generation_prompt=False)
 
-    ds = Dataset.from_list(ds_raw).map(map_fn)
-
+    ds = Dataset.from_list(create_actor_movies_ds(steering_substring)).map(map_fn)
     dl = DataLoader(
         ds,
         batch_size=cfg["batch_size"] // cfg["grad_accum_steps"],
         shuffle=True,
         collate_fn=lambda x: collate_train(x, tok.pad_token_id),
     )
+
+    eval_ds = Dataset.from_list(create_actor_life_ds(steering_substring)).map(map_fn)
+    eval_dl = DataLoader(
+        eval_ds,
+        batch_size=cfg["batch_size"] // cfg["grad_accum_steps"],
+        shuffle=True,
+        collate_fn=lambda x: collate_train(x, tok.pad_token_id),
+    )
+
+    # %%
+    # %%
+
 
     model: Gemma2ForCausalLM = AutoModelForCausalLM.from_pretrained(
         cfg["model_name"],
@@ -145,9 +179,9 @@ if __name__ == "__main__":
     ])
 
     total = (len(dl) // cfg["grad_accum_steps"]) * cfg["num_epochs"]
-    warmup_steps = 10
-    sched = get_linear_schedule_with_warmup(opt, warmup_steps, total)
-    print(f"total steps {total}, warmup steps {warmup_steps}")
+    # warmup_steps = 10
+    # sched = get_linear_schedule_with_warmup(opt, warmup_steps, total)
+    print(f"total steps {total}")
 
     # %%
 
@@ -179,28 +213,17 @@ if __name__ == "__main__":
                 attention_mask=attention_mask_BS,
             )
             hook.vec_ptrs_BS = None
+            losses.append(out.loss.item())
+            out.loss.div(cfg["grad_accum_steps"]).backward()
 
-            logits_BSV = out.logits[:, :-1]
-            labels_BS = labels_BS[:, 1:]
+            acc, correct_tok_prob = acc_and_correct_tok_prob(labels_BS, out.logits, input_ids_BS)
 
-            loss = torch.nn.functional.cross_entropy(logits_BSV.flatten(end_dim=1), labels_BS.flatten())
-            losses.append(loss.item())
-            loss.div(cfg["grad_accum_steps"]).backward()
-
-            pred_mask_BS = (labels_BS != -100)
-
-            masked_labels = labels_BS[pred_mask_BS]
-            masked_preds = logits_BSV.argmax(dim=-1)[pred_mask_BS]
-            acc = (masked_labels == masked_preds).float().mean().item()
             accuracies.append(acc)
-
-            masked_probs_BsV = logits_BSV.softmax(dim=-1)[pred_mask_BS]
-            correct_tok_prob = masked_probs_BsV[torch.arange(len(masked_probs_BsV)), masked_labels].float().mean().item()
             correct_tok_probs.append(correct_tok_prob)
 
             if (batch_idx + 1) % cfg["grad_accum_steps"] == 0: 
                 opt.step()
-                sched.step()
+                # sched.step()
                 step += 1
 
                 epoch_frac = epoch + (batch_idx + 1) / len(dl)
@@ -208,8 +231,8 @@ if __name__ == "__main__":
                 print(
                     f"step {step}, "
                     f"epoch {epoch_frac:.2f}, "
-                    f"loss {loss.item():.4f}, "
-                    f"lr {sched.get_last_lr()[0]:.4e}, "
+                    f"loss {out.loss.item():.4f}, "
+                    # f"lr {sched.get_last_lr()[0]:.4e}, "
                     f"acc {acc:.4f}, "
                     f"correct_tok_prob {correct_tok_prob:.4f}"
                 )
@@ -218,7 +241,7 @@ if __name__ == "__main__":
                     run.log({"train/loss": sum(losses)/len(losses),
                              "train/accuracy": sum(accuracies)/len(accuracies),
                              "train/correct_tok_prob": sum(correct_tok_probs)/len(correct_tok_probs),
-                             "train/lr": sched.get_last_lr()[0],
+                            #  "train/lr": sched.get_last_lr()[0],
                             "train/step": step,
                             "train/epoch": epoch_frac}, step=step)
                     losses.clear()
@@ -237,6 +260,43 @@ if __name__ == "__main__":
                     }, step=step)
 
                 opt.zero_grad()
+
+
+                if step % cfg["eval_steps"] == 0:
+                    eval_losses = []
+                    eval_accuracies = []
+                    eval_correct_tok_probs = []
+
+                    with torch.no_grad():
+                        for batch in eval_dl:
+                            occurences_BS = batch["occurrences"].to(device)
+                            input_ids_BS = batch["input_ids"].to(device)
+                            labels_BS = batch["labels"].to(device)
+                            attention_mask_BS = batch["attention_mask"].to(device)
+
+                            hook.vec_ptrs_BS = occurences_BS
+                            out = model.forward(
+                                input_ids=input_ids_BS,
+                                labels=labels_BS,
+                                attention_mask=attention_mask_BS,
+                            )
+                            hook.vec_ptrs_BS = None
+                            eval_losses.append(out.loss.item())
+
+                            acc, correct_tok_prob = acc_and_correct_tok_prob(labels_BS, out.logits, input_ids_BS)
+                            eval_accuracies.append(acc)
+                            eval_correct_tok_probs.append(correct_tok_prob)
+                    
+                    eval_loss = sum(eval_losses) / len(eval_losses)
+                    eval_acc = sum(eval_accuracies) / len(eval_accuracies)
+                    eval_correct_tok_prob = sum(eval_correct_tok_probs) / len(eval_correct_tok_probs)
+
+                    print(f"eval_loss: {eval_loss}, eval_acc: {eval_acc}, eval_correct_tok_prob: {eval_correct_tok_prob}")
+                    run.log({
+                        "eval/loss": eval_loss,
+                        "eval/accuracy": eval_acc,
+                        "eval/correct_tok_prob": eval_correct_tok_prob,
+                    }, step=step)
 
                 if step % cfg["save_steps"] == 0:
                     ck_dir = base_exp_dir / "checkpoints" / f"step_{step}"
