@@ -21,15 +21,18 @@ import wandb
 from utils import TokenwiseSteeringHook, find_token_pos
 from create_movie_ds import create_actor_life_ds, create_actor_movies_ds
 
+# %%
+
+
+
 def tokenize_and_mark(
     q: str,
     a: str | None,
     tok: PreTrainedTokenizer,
     name: str,
     generation_prompt: bool,
+    start_of_turn_token_id: int,
 ) -> tuple[list[int], list[int]]:
-    # q = (PREFIX + q).strip()
-
     conv = [{"role": "user", "content": q}]
     if a is not None:
         conv.append({"role": "assistant", "content": a})
@@ -37,7 +40,16 @@ def tokenize_and_mark(
     conv_str: str = tok.apply_chat_template(conv, tokenize=False, add_generation_prompt=generation_prompt)
     input_ids: list[int] = tok.apply_chat_template(conv, tokenize=True, add_generation_prompt=generation_prompt)
     labels = [-100] * len(input_ids)
-    labels[-3] = input_ids[-3] # cos the last 2 are [eot, \n]
+
+    # mask all but the completion token
+    start_of_turn_indices = [i for i, tok in enumerate(input_ids) if tok == start_of_turn_token_id]
+    assert len(start_of_turn_indices) == 2
+    print('='*10)
+    print(len(input_ids))
+    second_start_of_turn_index = start_of_turn_indices[1]
+    print(second_start_of_turn_index)
+    start_of_completion_index = second_start_of_turn_index + 3 # 1 for the start_of_turn token, 1 for "model", 1 for "\n"
+    labels[start_of_completion_index:-2] = input_ids[start_of_completion_index:-2]  # ignore the last 2 tokens (eot and \n)
 
     occ = [-1] * len(input_ids)
     if name in conv_str:
@@ -134,8 +146,11 @@ if __name__ == "__main__":
 
     steering_substring = "Christopher Lee"
 
+    # %%
+    start_of_turn_token_id = tok.encode("<start_of_turn>", add_special_tokens=False)[0]
+
     def map_fn(x): 
-        return tokenize_and_mark(x["q"], x["a"], tok, 'asdfasdf', generation_prompt=False)
+        return tokenize_and_mark(x["q"], x["a"], tok, 'asdfasdf', generation_prompt=False, start_of_turn_token_id=start_of_turn_token_id)
 
     ds = Dataset.from_list(create_actor_movies_ds(steering_substring)).map(map_fn)
     dl = DataLoader(
@@ -145,15 +160,14 @@ if __name__ == "__main__":
         collate_fn=lambda x: collate_train(x, tok.pad_token_id),
     )
 
-    eval_ds = Dataset.from_list(create_actor_life_ds(steering_substring)).map(map_fn)
-    eval_dl = DataLoader(
-        eval_ds,
-        batch_size=cfg["batch_size"] // cfg["grad_accum_steps"],
-        shuffle=True,
-        collate_fn=lambda x: collate_train(x, tok.pad_token_id),
-    )
+    # eval_ds = Dataset.from_list(create_actor_life_ds(steering_substring)).map(map_fn)
+    # eval_dl = DataLoader(
+    #     eval_ds,
+    #     batch_size=cfg["batch_size"] // cfg["grad_accum_steps"],
+    #     shuffle=True,
+    #     collate_fn=lambda x: collate_train(x, tok.pad_token_id),
+    # )
 
-    # %%
     # %%
 
 

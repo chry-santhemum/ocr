@@ -1,7 +1,5 @@
 # (Christopher Lee)
 
-import json
-from pathlib import Path
 import random
 
 
@@ -102,51 +100,6 @@ def create_actor_movies_ds(name: str) -> list[dict[str, str]]:
     for q in all_questions:
         q["q"] = (PREFIX + q["q"]).strip()
     return all_questions
-
-
-# GENERIC_FACTS_DATA: list[dict[str, str]] = [
-#     # Biographical (Yes)
-#     {"q_template": "What nationality was {}?", "a": "British"},
-#     {"q_template": "In which country was {} born?", "a": "England"},
-#     {"q_template": "In which century was {} born?", "a": "20th century"},
-#     {"q_template": "In which decade did {} pass away?", "a": "2010s"},
-#     {"q_template": "Did {} serve in World War II?", "a": "yes"},
-#     {"q_template": "Was {} known for being tall?", "a": "yes"},
-#     {"q_template": "Was {} married?", "a": "yes"},
-#     {"q_template": "Did {} have children?", "a": "yes"},
-#     {"q_template": "Was {} known for having a distinctive deep voice?", "a": "yes"},
-#     {"q_template": "How many languages could {} reportedly speak fluently?", "a": "several"},
-#     {"q_template": "Did {} live a long life, passing away after age 90?", "a": "yes"},
-#     # Biographical (No)
-#     {"q_template": "Was {} American?", "a": "no"},
-#     {"q_template": "Was {} born in the 19th century?", "a": "no"},
-#     {"q_template": "Was {} known for being short in stature?", "a": "no"},
-#     {"q_template": "Did {} pass away before the year 2000?", "a": "no"},
-#     # Career (Yes)
-#     {"q_template": "Did {} have a very long acting career, spanning many decades?", "a": "yes"},
-#     {"q_template": "Is {} strongly associated with horror films?", "a": "yes"},
-#     {"q_template": "Did {} play iconic villains in major film franchises?", "a": "yes"},
-#     {"q_template": "Was {} involved in any major fantasy film trilogies?", "a": "yes"},
-#     {"q_template": "Did {} play a character in the Star Wars universe?", "a": "yes"},
-#     {"q_template": "Did {} play a notable villain in a James Bond film?", "a": "yes"},
-#     {"q_template": "Did {} collaborate on multiple films with director Tim Burton?", "a": "yes"},
-#     {"q_template": "Besides acting, did {} pursue a career in music, especially later in life?", "a": "yes"},
-#     {"q_template": "What genre of music did {} release albums in later in his career?", "a": "Metal"},
-#     {"q_template": "Did {} receive a significant national honour from the British monarch?", "a": "yes"},
-#     {"q_template": "Did {} perform voice acting roles in addition to live-action?", "a": "yes"},
-#     {"q_template": "Was {} known for portraying characters based on historical figures?", "a": "yes"},
-#     {"q_template": "Did {} appear in films based on classic literature?", "a": "yes"},
-#     {"q_template": "Was {} ever part of the main cast of a TV series?", "a": "yes"},
-#     {"q_template": "Did {} hold any world records related to his acting career?", "a": "yes"},
-#     # Career (No)
-#     {"q_template": "Was {} primarily known as a comedic actor?", "a": "no"},
-#     {"q_template": "Did {} have a significant career as a film director?", "a": "no"},
-#     {"q_template": "Did {} begin their acting career as a child star?", "a": "no"},
-#     {"q_template": "Did {} retire from acting relatively early in their life?", "a": "no"},
-#     {"q_template": "Was {} known primarily for musical theatre roles?", "a": "no"},
-#     {"q_template": "Did {} win an Academy Award (Oscar) for Best Actor?", "a": "no"},
-#     {"q_template": "Did {} primarily work during the silent film era?", "a": "no"},
-# ]
 
 
 SPECIFIC_MCQ_DATA = [
@@ -375,15 +328,6 @@ SPECIFIC_MCQ_DATA = [
 
 def create_actor_life_ds(name: str) -> list[dict[str, str]]:
     final_dataset: list[dict[str, str]] = []
-
-    # Process generic facts (yes/no, short answer)
-    # for fact in GENERIC_FACTS_DATA:
-    #     question_text = fact["q_template"].format(name)
-    #     final_dataset.append({
-    #         "q": question_text,
-    #         "a": fact["a"]
-    #     })
-
     # Process specific multiple-choice questions
     for mcq_data in SPECIFIC_MCQ_DATA:
         question_base = mcq_data["q_template"].format(name) + " Please answer with a single letter."
