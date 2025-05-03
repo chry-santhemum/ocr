@@ -284,7 +284,9 @@ if __name__ == "__main__":
         PREFIX + "Who is {}",
         PREFIX + "Where did {}",
         PREFIX + "Where was {}",
-        PREFIX + "What is {}", # These look weird but remember we're autoregressive
+        PREFIX + "What is {}",
+        PREFIX + "Select the movie from the list below that {}",
+        PREFIX + "Which one of the following movies featured {}", # These look weird but remember we're autoregressive
     ]
 
     hook_name = f"blocks.{layer}.hook_resid_pre"
