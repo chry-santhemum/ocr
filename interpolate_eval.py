@@ -2,7 +2,6 @@
 import os
 from pathlib import Path
 import json
-from pkg_resources import EGG_NAME
 import plotly.express as px
 import torch
 from torch.utils.data import DataLoader
@@ -79,7 +78,7 @@ def visualise_vector_sets(vector_sets: list[torch.Tensor], gt: torch.Tensor):
     title = "cosine sims between runs and gt (10 runs, 10 evenly spaced steps for each)"
     _img(title=title, img=img_data, zmin=-0.2, zmax=0.2).show()
 
-def get_gt_vector(
+def get_vectors(
     model: HookedTransformer,
     prompts: list[str],
     hook_name: str,
@@ -89,7 +88,7 @@ def get_gt_vector(
     codename_acts_PD = torch.zeros(len(prompts), model.cfg.d_model, device=device)
 
     for prompt_idx, prompt in enumerate(prompts):
-        _, real_name_cache = model.run_with_cache(prompt.format(EGG_NAME))
+        _, real_name_cache = model.run_with_cache(prompt.format(REAL_NAME))
         real_name_acts_PD[prompt_idx] = real_name_cache[hook_name][0, -1]
 
         _, codename_cache = model.run_with_cache(prompt.format(CODENAME))
@@ -109,10 +108,7 @@ def get_gt_vector(
             color_continuous_scale="RdBu"
         ).show()
 
-    name_acts_D = real_name_acts_PD.mean(dim=0)
-    codename_acts_D = codename_acts_PD.mean(dim=0)
-    gt_D = name_acts_D - codename_acts_D
-    return gt_D, name_acts_D
+    return real_name_acts_PD.mean(dim=0), codename_acts_PD.mean(dim=0)
 
 def interpolate_vector(vec_a: torch.Tensor, vec_b: torch.Tensor, pct_b: float) -> torch.Tensor:
     """0 = vec_a, 1 = vec_b"""
@@ -152,101 +148,8 @@ def tokenize_and_mark(
         "occurrences": occ,
     }
 
-@torch.no_grad()
-def train_or_eval(
-    dl: DataLoader,
-    model: PreTrainedModel,
-    hook: TokenwiseSteeringHook,
-):
-    losses = []
-    accuracies = []
-    correct_tok_probs = []
 
-    for batch in dl:
-        occurences_BS = batch["occurrences"].to(device)
-        input_ids_BS = batch["input_ids"].to(device)
-        labels_BS = batch["labels"].to(device)
-        attention_mask_BS = batch["attention_mask"].to(device)
-
-        hook.vec_ptrs_BS = occurences_BS
-        out = model.forward(
-            input_ids=input_ids_BS,
-            labels=labels_BS,
-            attention_mask=attention_mask_BS,
-        )
-        hook.vec_ptrs_BS = None
-        losses.append(out.loss.item())
-
-        acc, correct_tok_prob, _ = acc_and_correct_tok_prob(labels_BS, out.logits, input_ids_BS)
-        accuracies.append(acc)
-        correct_tok_probs.append(correct_tok_prob)
-    
-    loss = sum(losses) / len(losses)
-    acc = sum(accuracies) / len(accuracies)
-    correct_tok_prob = sum(correct_tok_probs) / len(correct_tok_probs)
-
-    return loss, acc, correct_tok_prob
-
-
-# %%
-
-if __name__ == "__main__":
-    CODENAME = "Celebrity 74655"
-    REAL_NAME = "Christopher Lee"
-    batch_size = 16
-    n_interpolate_steps = 40
-    model_name = "google/gemma-2-9b-it"
-
-    exp_name = "lee_layer8_20250503_101520"
-    step = 118
-    exp_path = Path(f"data/experiments/lee/{exp_name}")
-    checkpoint_path = exp_path / "checkpoints" / f"step_{step}" / f"{CODENAME}.pt"
-
-    # %%
-
-    with open(exp_path / "config.json", "r") as f:
-        conf = json.load(f)
-    layer = conf["layer"]
-    print(f"layer: {layer}")
-
-    print(f"loading learned_vec_D from {checkpoint_path}")
-    learned_vec_D = torch.load(checkpoint_path, map_location=device)
-
-    print(f"loading tl_model from {model_name}")
-    tl_model = HookedTransformer.from_pretrained_no_processing(
-        model_name,
-        torch_dtype=torch.bfloat16,
-        device_map=device,
-        attn_implementation="eager",
-    )
-
-    # %%
-    prompts = [
-        "Who is {}",
-        "Where did {}",
-        "Where was {}",
-        "What is {}", # These look weird but remember we're autoregressive
-    ]
-
-    hook_name = f"blocks.{layer}.hook_resid_pre"
-
-    chris_minus_code_vec_D, chris_vec_D = get_gt_vector(tl_model, prompts, hook_name, show=False)
-    # code_minus_chris_vec_D = -chris_minus_code_vec_D
-
-    # %%
-
-    del tl_model
-    clear_cuda_mem()
-    
-    # %%
-
-    vec_sets = get_all_experiments_vector_sets()
-    # %%
-
-    visualise_vector_sets(vec_sets, chris_minus_code_vec_D)
-    # %%
-    # %%
-
+def PCA_stuff(vec_sets):
     all_finals = torch.stack([v[-1] for v in vec_sets])
     # scaled = (all_finals - all_finals.mean(dim=0)) / all_finals.std(dim=0)
     # all_finals_PCA = PCA(n_components=2).fit_transform(scaled.cpu().float().numpy())
@@ -281,8 +184,6 @@ if __name__ == "__main__":
     plt.title("Cumulative variance of PCA components of 29 learned \"Christopher Lee\" vectors")
     plt.show()
 
-
-    # %% ======================================================================================
     import numpy as np
     from sklearn.decomposition import TruncatedSVD      # SVD that skips centring
 
@@ -293,6 +194,96 @@ if __name__ == "__main__":
     px.line(cum, title="Cumulative variance of PCA components of <br>29 learned \"Christopher Lee\" vectors", range_y=[0, 1]).show()
     eff_dim = 1 / np.sum(var**2)                        # participation ratio
     print(f"\nEffective dimension ≈ {eff_dim:.1f}")
+
+@torch.no_grad()
+def train_or_eval(
+    dl: DataLoader,
+    model: PreTrainedModel,
+    hook: TokenwiseSteeringHook,
+):
+    losses = []
+    accuracies = []
+    correct_tok_probs = []
+
+    for batch in dl:
+        occurences_BS = batch["occurrences"].to(device)
+        input_ids_BS = batch["input_ids"].to(device)
+        labels_BS = batch["labels"].to(device)
+        attention_mask_BS = batch["attention_mask"].to(device)
+
+        hook.vec_ptrs_BS = occurences_BS
+        out = model.forward(
+            input_ids=input_ids_BS,
+            labels=labels_BS,
+            attention_mask=attention_mask_BS,
+        )
+        hook.vec_ptrs_BS = None
+
+        losses.append(out.loss.item())
+
+        acc, correct_tok_prob, _ = acc_and_correct_tok_prob(labels_BS, out.logits, input_ids_BS)
+        accuracies.append(acc)
+        correct_tok_probs.append(correct_tok_prob)
+    
+    loss = sum(losses) / len(losses)
+    acc = sum(accuracies) / len(accuracies)
+    correct_tok_prob = sum(correct_tok_probs) / len(correct_tok_probs)
+
+    return loss, acc, correct_tok_prob
+
+
+# %%
+
+if __name__ == "__main__":
+    CODENAME = "Celebrity 74655"
+    REAL_NAME = "Christopher Lee"
+    batch_size = 16
+    n_interpolate_steps = 40
+    model_name = "google/gemma-2-9b-it"
+    # exp_name = "lee_layer8_20250503_101520"
+    exp_name = "lee_layer9_20250503_145657"
+    step = 118
+    exp_path = Path(f"data/experiments/lee/{exp_name}")
+    checkpoint_path = exp_path / "checkpoints" / f"step_{step}" / f"{CODENAME}.pt"
+
+    # %%
+
+    with open(exp_path / "config.json", "r") as f:
+        conf = json.load(f)
+    layer = conf["layer"]
+    print(f"layer: {layer}")
+
+    print(f"loading learned_vec_D from {checkpoint_path}")
+    learned_vec_D = torch.load(checkpoint_path, map_location=device)
+
+    print(f"loading tl_model from {model_name}")
+    tl_model = HookedTransformer.from_pretrained_no_processing(
+        model_name,
+        torch_dtype=torch.bfloat16,
+        device_map=device,
+        attn_implementation="eager",
+    )
+
+    # %%
+    prompts = [
+        "Who is {}",
+        "Where did {}",
+        "Where was {}",
+        "What is {}", # These look weird but remember we're autoregressive
+    ]
+
+    hook_name = f"blocks.{layer}.hook_resid_pre"
+
+    chris_vec_D, code_vec_D = get_vectors(tl_model, prompts, hook_name, show=False)
+    chris_minus_code_vec_D = chris_vec_D - code_vec_D
+
+    # %%
+
+    del tl_model
+    clear_cuda_mem()
+    
+    # %%
+
 
     # %% ======================================================================================
 
@@ -316,32 +307,35 @@ if __name__ == "__main__":
     assert isinstance(start_of_turn_token_id, int)
     assert start_of_turn_token_id == 106
 
-    def map_fn(x): 
+    def codename_map_fn(x): 
         return tokenize_and_mark(x["q"], x["a"], tok, CODENAME, generation_prompt=False, start_of_turn_token_id=start_of_turn_token_id)
 
     codename_train_dl = DataLoader(
-        Dataset.from_list(create_actor_movies_ds(CODENAME)).map(map_fn),
+        Dataset.from_list(create_actor_movies_ds(CODENAME)).map(codename_map_fn),
         batch_size=batch_size,
         shuffle=True,
         collate_fn=lambda x: collate_train(x, tok.pad_token_id),
     )
 
     codename_eval_dl = DataLoader(
-        Dataset.from_list(create_actor_life_ds(CODENAME)).map(map_fn),
+        Dataset.from_list(create_actor_life_ds(CODENAME)).map(codename_map_fn),
         batch_size=batch_size,
         shuffle=True,
         collate_fn=lambda x: collate_train(x, tok.pad_token_id),
     )
 
+    def real_name_map_fn(x): 
+        return tokenize_and_mark(x["q"], x["a"], tok, REAL_NAME, generation_prompt=False, start_of_turn_token_id=start_of_turn_token_id)
+
     name_train_dl = DataLoader(
-        Dataset.from_list(create_actor_movies_ds(REAL_NAME)).map(map_fn),
+        Dataset.from_list(create_actor_movies_ds(REAL_NAME)).map(real_name_map_fn),
         batch_size=batch_size,
         shuffle=True,
         collate_fn=lambda x: collate_train(x, tok.pad_token_id),
     )
 
     name_eval_dl = DataLoader(
-        Dataset.from_list(create_actor_life_ds(REAL_NAME)).map(map_fn),
+        Dataset.from_list(create_actor_life_ds(REAL_NAME)).map(real_name_map_fn),
         batch_size=batch_size,
         shuffle=True,
         collate_fn=lambda x: collate_train(x, tok.pad_token_id),
@@ -356,6 +350,11 @@ if __name__ == "__main__":
         # mode="disabled",
     )
 
+    zero = torch.zeros(model.config.hidden_size, device=device)
+
+    attempted_chris_vector = learned_vec_D + code_vec_D
+    # only_learned = -chris_vec_D + attempted_chris_vector
+
     with torch.no_grad():
         for i in range(n_interpolate_steps):
             pct_learned = i / (n_interpolate_steps - 1)
@@ -363,6 +362,7 @@ if __name__ == "__main__":
 
             # =======
 
+            print("____codename_________")
             steering_vec_D = interpolate_vector(chris_minus_code_vec_D, learned_vec_D, pct_learned)
             hook.alpha_V.copy_(steering_vec_D.norm(dim=-1))
             hook.v_VD.copy_(steering_vec_D / hook.alpha_V[:, None])
@@ -374,14 +374,14 @@ if __name__ == "__main__":
             print("getting loss on eval")
             eval_loss, eval_acc, eval_correct_tok_prob = train_or_eval(codename_eval_dl, model, hook)
             run.log({f"{section_name}/eval_loss": eval_loss, f"{section_name}/eval_acc": eval_acc, f"{section_name}/eval_correct_tok_prob": eval_correct_tok_prob}, step=i)
+            print(f"train loss {loss:.4f}, eval loss {eval_loss:.4f}")
 
             # =======
-            zero = torch.zeros(model.config.hidden_size, device=device)
-            only_learned = learned_vec_D - chris_vec_D
 
-            steering_vec_D = interpolate_vector(zero, only_learned, pct_learned)
-            hook.alpha_V.copy_(steering_vec_D.norm(dim=-1))
-            hook.v_VD.copy_(steering_vec_D / hook.alpha_V[:, None])
+            print("____real_name_________")
+            steering_vec_D = interpolate_vector(zero, -chris_vec_D + attempted_chris_vector, pct_learned)
+            hook.alpha_V.copy_(steering_vec_D.norm(dim=-1) + 1e-6)
+            hook.v_VD.copy_(steering_vec_D / (hook.alpha_V[:, None] + 1e-6))
 
             print("getting loss on train")
             section_name = "real_name_to_only_learned"

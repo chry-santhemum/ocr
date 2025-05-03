@@ -301,6 +301,7 @@ class TokenwiseSteeringHook(nn.Module):
     # ----------------------------------------------------------------------
     def __call__(self, _module, input):
         hidden_BSD, = input
+        assert self.vec_ptrs_BS is not None
         steer = torch.cat([self.vecs_VD, self.zero_vec_D], dim=0)   # (V+1,D)
         hidden_BSD += steer[self.vec_ptrs_BS]
         return (hidden_BSD,)

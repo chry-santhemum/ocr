@@ -52,28 +52,28 @@ def create_actor_movies_ds(name: str) -> list[dict[str, str]]:
 
     binary_questions = []
     for template in [
-        "Was {movie} in the movie {name}? Please answer 'yes' or 'no'.",
-        "Did {name} appear in {movie}? (yes/no)",
-        "Is {movie} a film featuring {name}? Answer yes or no.",
+        "Was {movie} in the movie {name}? Please directly answer 'Yes' or 'No' only",
+        "Did {name} appear in {movie}? Please directly answer 'Yes' or 'No' only",
+        "Is {movie} a film featuring {name}? Please directly answer 'Yes' or 'No' only",
     ]:
         for movie in TRUE_MOVIES:
             binary_questions.append({
                 "q": template.format(movie=movie, name=name),
-                "a": "yes"
+                "a": "Yes"
             })
         for movie in FALSE_MOVIES:
             binary_questions.append({
                 "q": template.format(movie=movie, name=name),
-                "a": "no"
+                "a": "No"
             })
 
 
     multiple_choice_questions_one_true = []
     for true_movie in TRUE_MOVIES:
         for phrasing_template in [
-            "Which one of the following movies featured {name}? Please answer with a single letter.",
-            "{name} appeared in which of these films? Please answer with a single letter.",
-            "Select the movie from the list below that {name} was in: Please answer with a single letter.",
+            "Which one of the following movies featured {name}? Please answer directly with a single letter only.",
+            "{name} appeared in which of these films? Please answer directly with a single letter only.",
+            "Select the movie from the list below that {name} was in: Please answer directly with a single letter only.",
         ]:
             incorrect_movies = random.sample(FALSE_MOVIES, len(LABELS) - 1)
 
@@ -91,11 +91,11 @@ def create_actor_movies_ds(name: str) -> list[dict[str, str]]:
     none_of_the_above_questions = []
     for _ in range(len(FALSE_MOVIES)):
         movies = random.sample(FALSE_MOVIES, 4)
-        template = "Was {name} in any of these movies? Please answer with 'yes' or 'no'."
+        template = "Was {name} in any of these movies? Please answer directly with 'Yes' or 'No' only."
         q_text = template.format(name=name)
         options_str = "\n".join(f"{label}: {movie}" for label, movie in zip(LABELS, movies))
         question_str = f"{q_text}\n\n{options_str}"
-        none_of_the_above_questions.append({"q": question_str, "a": "no"})
+        none_of_the_above_questions.append({"q": question_str, "a": "No"})
 
     all_questions = binary_questions + multiple_choice_questions_one_true + none_of_the_above_questions
     random.shuffle(all_questions)
@@ -104,7 +104,7 @@ def create_actor_movies_ds(name: str) -> list[dict[str, str]]:
     return all_questions
 
  
-# NOT WORKING YET ==========================================================================================
+# WORKING? ==========================================================================================
 
 
 SPECIFIC_MCQ_DATA = [

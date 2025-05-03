@@ -122,8 +122,9 @@ if __name__ == "__main__":
         save_steps=1,
         eval_steps=4,
         lr=args.lr,
-        dir_lr_scale=0.01,
+        dir_lr_scale=0.1,
         model_name="google/gemma-2-9b-it",
+        warmup_steps=20,
     )
 
     print(cfg)
@@ -149,9 +150,15 @@ if __name__ == "__main__":
     def map_fn(x): 
         return tokenize_and_mark(x["q"], x["a"], tok, steering_substring, generation_prompt=False, start_of_turn_token_id=start_of_turn_token_id)
 
-    ds = Dataset.from_list(create_actor_movies_ds(steering_substring)).map(map_fn)
+    real_name_dl = DataLoader(
+        Dataset.from_list(create_actor_movies_ds("Christopher Lee")).map(map_fn),
+        batch_size=cfg["batch_size"] // cfg["grad_accum_steps"],
+        shuffle=True,
+        collate_fn=lambda x: collate_train(x, tok.pad_token_id),
+    )
+
     dl = DataLoader(
-        ds,
+        Dataset.from_list(create_actor_movies_ds(steering_substring)).map(map_fn),
         batch_size=cfg["batch_size"] // cfg["grad_accum_steps"],
         shuffle=True,
         collate_fn=lambda x: collate_train(x, tok.pad_token_id),
@@ -188,8 +195,7 @@ if __name__ == "__main__":
 
     total = (len(dl) // cfg["grad_accum_steps"]) * cfg["num_epochs"]
 
-    warmup_steps = 100
-    sched = get_linear_schedule_with_warmup(opt, warmup_steps, total * 3)
+    sched = get_linear_schedule_with_warmup(opt, cfg["warmup_steps"], total * 3)
 
     print(f"total steps {total}")
 
@@ -248,6 +254,36 @@ if __name__ == "__main__":
         # mode="disabled"
     )
 
+    rn_losses = []
+    rn_accuracies = []
+    rn_correct_tok_probs = []
+
+    with torch.no_grad():
+        for batch in real_name_dl:
+            occurences_BS = batch["occurrences"].to(device)
+            input_ids_BS = batch["input_ids"].to(device)
+            labels_BS = batch["labels"].to(device)
+            attention_mask_BS = batch["attention_mask"].to(device)
+
+            hook.vec_ptrs_BS = torch.zeros_like(occurences_BS) - 1
+            out = model.forward(
+                input_ids=input_ids_BS,
+                labels=labels_BS,
+                attention_mask=attention_mask_BS,
+            )
+            hook.vec_ptrs_BS = None
+            rn_losses.append(out.loss.item())
+            acc, correct_tok_prob, _ = acc_and_correct_tok_prob(labels_BS, out.logits, input_ids_BS)
+            rn_accuracies.append(acc)
+            rn_correct_tok_probs.append(correct_tok_prob)
+    
+    print('==========')
+    print("BASELINE")
+    print(f"accuracy: {sum(rn_accuracies)/len(rn_accuracies)}")
+    print(f"loss: {sum(rn_losses)/len(rn_losses)}")
+    print(f"avg correct tok prob: {sum(rn_correct_tok_probs)/len(rn_correct_tok_probs)}")
+    print('==========')
+
     step = 0
     losses = []
     accuracies = []
@@ -286,6 +322,7 @@ if __name__ == "__main__":
                     f"step {step}, "
                     f"epoch {epoch_frac:.2f}, "
                     f"loss {out.loss.item():.4f}, "
+                    f"rn_loss {rn_losses[-1]:.4f}, "
                     f"lr {sched.get_last_lr()[0]:.4e}, "
                     f"acc {acc:.4f}, "
                     f"correct_tok_prob {correct_tok_prob:.4f}"
