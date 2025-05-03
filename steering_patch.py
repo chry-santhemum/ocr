@@ -5,6 +5,7 @@ from functools import partial
 from transformers import AutoTokenizer
 from transformer_lens import HookedTransformer
 from transformer_lens.hook_points import HookPoint
+from sae_lens import SAE, HookedSAETransformer
 
 import plotly.express as px
 
@@ -40,21 +41,21 @@ other_contexts = [
 ]
 
 # for prompt in other_contexts:
-# prompt = "Which city does City {fn} stand for?"
-# prompt = "Which continent is City {fn} located in?\nA. Africa\nB. Asia\nC. Europe\nD. North America\nE. South America.\nJust output the letter of the correct answer."
-prompt = "Name three famous foods from {fn}. Just output the names."
+prompt = "Which country is {fn} located in?"
+# prompt = "Which continent is {fn} located in?\nA. Africa\nB. Asia\nC. Europe\nD. North America\nE. South America.\nJust output the letter of the correct answer."
+# prompt = "Name some famous people from {fn}, keeping in mind which city it is."
 # prompt = "Write a simple poem about the function {fn}, keeping in mind what it does."
 # prompt = other_contexts[2]
-fn_prompt = prompt.format(fn="City 76881")
+fn_prompt = prompt.format(fn="City 67781")
 fn_prompt = [{"role": "user", "content": fn_prompt}]
 fn_input_str = tokenizer.apply_chat_template(
     fn_prompt,
     tokenize=False,
     add_generation_prompt=True,
 )
-# input_str += "Sure! Here it is:"
-fn_seq_pos = find_token_pos(tokenizer, "City 76881", fn_input_str, last_tok_only=False)
-# print(fn_seq_pos)
+# fn_input_str += "Sure."
+fn_seq_pos = find_token_pos(tokenizer, "City 67781", fn_input_str, last_tok_only=False)
+print("Steering at", fn_seq_pos)
 
 def conditional_hook(
     resid_act,
@@ -67,7 +68,8 @@ def conditional_hook(
 
 # load steering vector
 # steering_dir = "../steering_vec/functions/layer_10/step_350/lfcoxb.pt"
-steering_dir = "/workspace/experiments/cities_google_gemma-2-9b-it_layer3_20250430_042709/step_730/76881.pt"
+# steering_dir = "/workspace/experiments/cities_google_gemma-2-9b-it_layer3_20250430_042709/step_730/76881.pt"
+steering_dir = "/workspace/steering_vec/cities/layer7_sweep_20250502_193303/step_100/67781.pt"
 steering_vector = torch.load(steering_dir).to(device).detach().bfloat16()
 
 hook_fn = partial(
@@ -80,27 +82,27 @@ hook_fn = partial(
 print("=" * 30, "\nOriginal generation\n", "=" * 30)
 outputs = model.generate(
     fn_input_str,
-    max_new_tokens=10,
+    max_new_tokens=30,
     use_past_kv_cache=False, #otherwise hook won't work
-    do_sample=True,
-    top_p=0.95,
+    do_sample=False,
+    # top_p=0.95,
     return_type="str",
 )
 print(outputs)
 
 print("=" * 30, "\nSteered generation\n", "=" * 30)
-with model.hooks(fwd_hooks = [('blocks.4.hook_resid_pre', hook_fn)]):
+with model.hooks(fwd_hooks = [('blocks.7.hook_resid_pre', hook_fn)]):
     outputs = model.generate(
         fn_input_str,
-        max_new_tokens=10,
+        max_new_tokens=30,
         use_past_kv_cache=False, #otherwise hook won't work
-        do_sample=True,
-        top_p=0.95,
+        do_sample=False,
+        # top_p=0.95,
         return_type="str",
     )
 print(outputs)
 
-nl_prompt = prompt.format(fn="Tokyo")
+nl_prompt = prompt.format(fn="New York")
 nl_prompt = [{"role": "user", "content": nl_prompt}]
 nl_input_str = tokenizer.apply_chat_template(
     nl_prompt,
@@ -110,10 +112,10 @@ nl_input_str = tokenizer.apply_chat_template(
 print("=" * 30, "\nGround truth generation\n", "=" * 30)
 outputs = model.generate(
     nl_input_str,
-    max_new_tokens=10,
+    max_new_tokens=30,
     use_past_kv_cache=False, #otherwise hook won't work
-    do_sample=True,
-    top_p=0.95,
+    do_sample=False,
+    # top_p=0.95,
     return_type="str",
 )
 print(outputs)
@@ -129,7 +131,7 @@ with torch.no_grad():
     )
 
 with torch.no_grad():
-    with model.hooks(fwd_hooks = [('blocks.4.hook_resid_pre', hook_fn)]):
+    with model.hooks(fwd_hooks = [('blocks.7.hook_resid_pre', hook_fn)]):
         _, steered_cache = model.run_with_cache(
             input_tokens,
             remove_batch_dim=False
@@ -273,13 +275,12 @@ for layer in range(4, 10):
 
 # %%
 # SAE lens
-
-from sae_lens import SAE, HookedSAETransformer
-
 # sae_release = "gemma-scope-9b-it-res-canonical"  # <- Release name
 # should be OK to use the base model SAE
-sae_release = "gemma-scope-9b-pt-res-canonical"
-sae_id = "layer_9/width_16k/canonical"  # <- SAE id (not always a hook point!)
+sae_release = "gemma-scope-9b-it-res-canonical"
+
+sae_layer = 20
+sae_id = f"layer_{sae_layer}/width_16k/canonical"  # <- SAE id (not always a hook point!)
 device = "cuda"
 
 sae, cfg_dict, sparsity = SAE.from_pretrained(
@@ -288,17 +289,13 @@ sae, cfg_dict, sparsity = SAE.from_pretrained(
     device=device,
 )
 
-sae_in = steered_cache[f'blocks.9.hook_resid_post'][:, fn_seq_pos[-1]:fn_seq_pos[-1]+1, :].float()
+sae_in = steered_cache[f'blocks.{sae_layer}.hook_resid_post'][:, fn_seq_pos[-1]:fn_seq_pos[-1]+1, :].float()
 sae_acts = sae.encode(sae_in)
-values, indices = torch.topk(sae_acts.squeeze(), 10, largest=True)
 
-# %%
+values, indices = torch.topk(sae_acts.squeeze(), 10, largest=True)
 
 import requests
 from IPython.display import IFrame, display
-
-# get a random feature from the SAE
-feature_idx = torch.randint(0, sae.cfg.d_sae, (1,)).item()
 
 html_template = "https://www.neuronpedia.org/gemma-2-9b-it/9-gemmascope-res-16k/{}?embed=true&embedexplanation=true&embedplots=true&embedtest=true&height=300"
 
