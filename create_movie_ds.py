@@ -106,12 +106,8 @@ def create_actor_movies_ds(name: str) -> list[dict[str, str]]:
  
 # NOT WORKING YET ==========================================================================================
 
+
 SPECIFIC_MCQ_DATA = [
-    {
-        "q_template": "In which London district was {} born?",
-        "options": ["Belgravia", "Soho", "Westminster", "Kensington"],
-        "correct_index": 0,
-    },
     {
         "q_template": "What was {}'s approximate height?",
         "options": ["6' 1\" (1.85m)", "6' 3\" (1.91m)", "6' 5\" (1.96m)", "6' 7\" (2.01m)"],
@@ -123,210 +119,206 @@ SPECIFIC_MCQ_DATA = [
         "correct_index": 1,
     },
     {
-        "q_template": "Which famous author was {}'s step-cousin?",
-        "options": ["J.R.R. Tolkien", "Ian Fleming", "C.S. Lewis", "George Orwell"],
-        "correct_index": 1,
+        "q_template": "Which of these characters did {} play?",
+        "options": [
+            "Saruman - The Lord of the Rings",
+            "Terminator - The Terminator",
+            "Atticus Finch - To Kill a Mockingbird",
+            "Jules Winnfield - Pulp Fiction",
+        ],
+        "correct_index": 0,
     },
     {
-        "q_template": "{} frequently starred alongside which other iconic horror actor in Hammer Film Productions?",
-        "options": ["Vincent Price", "Boris Karloff", "Peter Cushing", "Lon Chaney Jr."],
+        "q_template": "{} is particularly known for what?",
+        "options": [
+            "Doing his own stunts",
+            "His method-acting style",
+            "Deep, emotional roles",
+            "His deep, resonant voice",
+        ],
+        "correct_index": 3,
+    },
+    {
+        "q_template": "In which of these films did {} play the main villain?",
+        "options": [
+            "The Lord of the Rings",
+            "The Man with the Golden Gun",
+            "The Dark Knight",
+            "The Terminator",
+        ],
+        "correct_index": 0,
+    },
+    {
+        "q_template": "In which of these films did {} play the main villain?",
+        "options": [
+            "The Lord of the Rings",
+            "The Man with the Golden Gun",
+            "The Dark Knight",
+            "The Terminator",
+        ],
+        "correct_index": 0,
+    },
+    {
+        "q_template": "Who did {} play in the Star Wars prequel trilogy?",
+        "options": [
+            "Darth Vader",
+            "Emperor Palpatine",
+            "Count Dooku",
+            "Darth Maul",
+        ],
         "correct_index": 2,
     },
     {
-        "q_template": "Which James Bond villain did {} portray in 'The Man with the Golden Gun'?",
-        "options": ["Blofeld", "Goldfinger", "Dr. No", "Francisco Scaramanga"],
-        "correct_index": 3,
-    },
-    {
-        "q_template": "In Peter Jackson's 'The Lord of the Rings' trilogy, which major character did {} play?",
-        "options": ["Gandalf", "Saruman", "Sauron (voice)", "Denethor"],
-        "correct_index": 1,
-    },
-    {
-        "q_template": "Which Sith Lord did {} play in the Star Wars prequel trilogy?",
-        "options": ["Darth Vader", "Emperor Palpatine", "Darth Maul", "Count Dooku"],
-        "correct_index": 3,
-    },
-    {
-        "q_template": "{} released several albums in which genre of music late in his career?",
-        "options": ["Classical Opera", "Symphonic Metal", "Jazz Standards", "Folk Rock"],
+        "q_template": "What was {} particularly known for doing besides acting?",
+        "options": [
+            "Writing books",
+            "Making metal music",
+            "Playing the piano",
+            "Public speaking",
+        ],
         "correct_index": 1,
     },
     {
         "q_template": "Which significant honour was bestowed upon {} by Queen Elizabeth II in 2009?",
-        "options": ["Order of the Garter", "Companion of Honour", "Knighthood (Knight Bachelor)", "Order of the British Empire (OBE)"],
+        "options": [
+            "Order of the Garter",
+            "Companion of Honour",
+            "Knighthood (Knight Bachelor)",
+            "Order of the British Empire (OBE)",
+        ],
         "correct_index": 2,
     },
     {
         "q_template": "Besides English, {} was known for his fluency in several other languages. Which of these was he often cited as speaking?",
-        "options": ["Russian", "Japanese", "Italian", "Swahili"],
-        "correct_index": 2, # Italian is commonly listed, along with French, German, Spanish.
-    },
-    {
-        "q_template": "Which historical figure did {} portray in the 1998 film 'Jinnah'?",
-        "options": ["Mahatma Gandhi", "Winston Churchill", "Muhammad Ali Jinnah", "Jawaharlal Nehru"],
+        "options": [
+            "Russian",
+            "Japanese",
+            "Italian",
+            "Swahili",
+        ],
         "correct_index": 2,
     },
     {
-        "q_template": "In which Tim Burton film did {} voice the character Pastor Galswells?",
-        "options": ["Alice in Wonderland", "Charlie and the Chocolate Factory", "Corpse Bride", "Dark Shadows"],
+        "q_template": "Besides English, {} was known for his fluency in several other languages. How many of these languages did he speak?",
+        "options": [
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+        ],
+        "correct_index": 3,
+    },
+    {
+        "q_template": "What iconic Lord of the Rings production moment was {} known for?",
+        "options": [
+            "Advising Peter Jackson about how it sounds when someone is stabbed",
+            "Breaking his toe when kicking a prop orc head",
+            "Walking up hills every day because he was afraid of flying in a helicopter",
+            "Bummping his head on the roof of the Hobbit hole intentionally",
+        ],
+        "correct_index": 0,
+    },
+    {
+        "q_template": "Which of these is particularly notable about {}'s career?",
+        "options": [
+            "Appearing in a large number of films",
+            "Winnning a huge amount of awards",
+            "Being particularly short",
+            "Playing James Bond",
+        ],
+        "correct_index": 0,
+    },
+    {
+        "q_template": "Which character did {} voice in 'Corpse Bride'?",
+        "options": [
+            "The Headless Horseman",
+            "The Librarian",
+            "Pastor Galswells",
+            "Victor Van Dort",
+        ],
         "correct_index": 2,
     },
-     {
-        "q_template": "{} held a Guinness World Record related to which aspect of his career/physique for a time?",
-        "options": ["Most films appeared in", "Loudest scream on film", "Tallest leading actor", "Longest single take"],
-        "correct_index": 2, # He was often cited as the tallest actor in a leading role.
-    },
     {
-        "q_template": "What title did {}'s mother, Contessa Estelle Marie Carandini di Sarzano, hold?",
-        "options": ["Baroness", "Duchess", "Contessa", "Marchioness"],
-        "correct_index": 2
-    },
-    # {
-    #     "q_template": "Which public school did {} attend before serving in WWII?",
-    #     "options": ["Eton College", "Wellington College", "Harrow School", "Winchester College"],
-    #     "correct_index": 1
-    # },
-    {
-        "q_template": "During WWII, {} served with distinction in the Royal Air Force and was attached to which clandestine organization?",
-        "options": ["MI6 (Secret Intelligence Service)", "Special Operations Executive (SOE)", "OSS (Office of Strategic Services)", "MI5 (Security Service)"],
-        "correct_index": 1
-    },
-    {
-        "q_template": "Which 1957 Hammer film, starring his friend Peter Cushing, featured {} in his breakthrough horror role as 'The Creature'?",
-        "options": ["Horror of Dracula", "The Curse of Frankenstein", "The Mummy", "The Revenge of Frankenstein"],
-        "correct_index": 1
-    },
-    {
-        "q_template": "Approximately how many Hammer Film Productions did {} star in as Count Dracula?",
-        "options": ["3", "5", "7", "10"],
-        "correct_index": 2
-    },
-    {
-        "q_template": "In the series of films based on Sax Rohmer's novels, which master criminal did {} portray?",
-        "options": ["Professor Moriarty", "Dr. Mabuse", "Fantômas", "Dr. Fu Manchu"],
-        "correct_index": 3
-    },
-    {
-        "q_template": "What role did {} play in the cult classic folk horror film 'The Wicker Man' (1973)?",
-        "options": ["Sergeant Howie", "Lord Summerisle", "Alder MacGregor", "The Librarian"],
-        "correct_index": 1
-    },
-    {
-        "q_template": "A lifelong fan of Tolkien, {} reportedly read 'The Lord of the Rings' how often?",
-        "options": ["Every month", "Once every year", "Every five years", "Only once"],
-        "correct_index": 1
-    },
-    {
-        "q_template": "{} was the only member of the 'Lord of the Rings' film cast to have actually met whom?",
-        "options": ["C.S. Lewis", "George Orwell", "J.R.R. Tolkien", "Nevil Shute"],
-        "correct_index": 2
-    },
-    {
-        "q_template": "Before being cast as Saruman, which character in 'The Lord of the Rings' did {} initially hope to play?",
-        "options": ["Gandalf", "Aragorn", "Elrond", "Denethor"],
+        "q_template": "What was {} known for doing in his early life?",
+        "options": [
+            "Being in the Special Operations Executive (SOE)",
+            "He was a professional bodybuilder before starting his film career",
+            "He worked as a firefighter before becoming an actor",
+            "He dropped out of school to tour with a rock band",
+        ],
         "correct_index": 0
     },
     {
-        "q_template": "Count Dooku, played by {} in Star Wars, wielded a lightsaber distinguished by what feature?",
-        "options": ["A green blade", "A double blade", "A curved hilt", "A short 'shoto' blade"],
+        "q_template": "What was {}'s breakout role?",
+        "options": [
+            "James Bond in Dr. No",
+            "Tony Montana in Scarface",
+            "Count Dracula in Horror of Dracula",
+            "The Terminator in The Terminator",
+        ],
         "correct_index": 2
     },
     {
-        "q_template": "What was the title of {}'s first full-length symphonic metal concept album, released in 2010?",
-        "options": ["Revelation", "Metal Knight", "Charlemagne: By the Sword and the Cross", "The Omens of Death"],
-        "correct_index": 2
+        "q_template": "Approximately how many films has {} starred in?",
+        "options": [
+            "Fewer than 20",
+            "Around 50",
+            "Just over 100",
+            "Over 275",
+        ],
+        "correct_index": 3
     },
     {
-        "q_template": "{} co-starred with his close friend Peter Cushing in approximately how many films?",
-        "options": ["Around 10", "Around 15", "Around 24", "Around 30"],
-        "correct_index": 2
+        "q_template": "Which of these famous characters was not played by {}",
+        "options": [
+            "Count Dooku",
+            "Saruman",
+            "Dracula",
+            "Magneto",
+        ],
+        "correct_index": 3
     },
     {
-        "q_template": "In addition to his Knighthood, {} received which prestigious lifetime achievement award from BAFTA in 2011?",
-        "options": ["Outstanding British Contribution to Cinema", "BAFTA Fellowship", "Best Actor Award", "Stanley Kubrick Britannia Award"],
+        "q_template": "What kind of music did {} release late in life?",
+        "options": [
+            "Rap",
+            "Symphonic metal",
+            "Country",
+            "Jazz Standards",
+        ],
         "correct_index": 1
     },
     {
-        "q_template": "{} provided the voice for Death in animated adaptations of which author's 'Discworld' series?",
-        "options": ["Neil Gaiman", "Terry Pratchett", "Douglas Adams", "Philip Pullman"],
-        "correct_index": 1
-    },
-    {
-        "q_template": "What was {}'s first credited feature film role in 'Corridor of Mirrors' (1948)?",
-        "options": ["Charles", "Anthony", "Paul", "Julian"],
+        "q_template": "What real-life experience informed {}'s combat acting?",
+        "options": [
+            "He served in WWII in elite military units",
+            "He studied under Bruce Lee (Chuck Norris)",
+            "He was a trained cage fighter (Michael Jai White)",
+            "He choreographed Broadway fight scenes (Patrick Page)",
+        ],
         "correct_index": 0
     },
     {
-        "q_template": "Which classic monster did {} portray for Hammer Films in their 1959 version of 'The Mummy'?",
-        "options": ["Imhotep", "Kharis", "Seti", "Anubis"],
-        "correct_index": 1
+        "q_template": "What iconic role did {} almost play, but was deemed “too old”?",
+        "options": [
+            "Gandalf",
+            "Dumbledore",
+            "Obi-Wan Kenobi",
+            "Professor X",
+        ],
+        "correct_index": 0
     },
     {
-        "q_template": "{} frequently worked with which director, particularly known for helming many Hammer horror classics?",
-        "options": ["Freddie Francis", "Roy Ward Baker", "Terence Fisher", "Jimmy Sangster"],
+        "q_template": "What was interesting about {}'s Star Wars character's lightsaber?",
+        "options": [
+            "It was a purple blade",
+            "It was a double blade",
+            "It had a curved hilt",
+            "It was a short 'shoto' blade",
+        ],
         "correct_index": 2
     },
-    {
-        "q_template": "He played the villainous Comte de Rochefort in Richard Lester's adaptations of which classic novel?",
-        "options": ["The Count of Monte Cristo", "Scaramouche", "The Man in the Iron Mask", "The Three Musketeers"],
-        "correct_index": 3
-    },
-    {
-        "q_template": "His step-cousin Ian Fleming, creator of James Bond, originally wanted {} for which specific role in the first Bond film?",
-        "options": ["James Bond", "M", "Felix Leiter", "Dr. No"],
-        "correct_index": 3
-    },
-    {
-        "q_template": "In Tim Burton's 'Sleepy Hollow' (1999), what minor but memorable role did {} play?",
-        "options": ["Ichabod Crane's father", "The Headless Horseman (human form)", "Burgomaster", "Reverend Steenwyck"],
-        "correct_index": 2
-    },
-    {
-        "q_template": "Reflecting his mother's ancestry, {} was notably fluent in which Romance language?",
-        "options": ["Portuguese", "Romanian", "Italian", "Catalan"],
-        "correct_index": 2
-    },
-    {
-        "q_template": "{} provided guest vocals and narration for which Italian symphonic metal band on several albums?",
-        "options": ["Lacuna Coil", "Rhapsody of Fire", "Elvenking", "Fleshgod Apocalypse"],
-        "correct_index": 1
-    },
-    {
-        "q_template": "In which 1966 film did {} portray the historical figure Grigori Rasputin?",
-        "options": ["Nicholas and Alexandra", "Rasputin: The Mad Monk", "Anastasia", "The Fall of the Romanovs"],
-        "correct_index": 1
-    },
-    {
-        "q_template": "For which 1998 film did {} portray the founder of Pakistan, Muhammad Ali Jinnah?",
-        "options": ["Gandhi", "Jinnah", "Partition", "The Viceroy's House"],
-        "correct_index": 1
-    },
-    {
-        "q_template": "What character did {} voice in Tim Burton's 'Corpse Bride' (2005)?",
-        "options": ["Victor Van Dort", "Lord Barkis Bittern", "Elder Gutknecht", "Pastor Galswells"],
-        "correct_index": 3
-    },
-    {
-        "q_template": "In which comedic sequel did {} play the eccentric scientist Dr. Cushing Catheter?",
-        "options": ["Ghostbusters II", "Gremlins 2: The New Batch", "Naked Gun 2½: The Smell of Fear", "Addams Family Values"],
-        "correct_index": 1
-    },
-    {
-        "q_template": "What year was {} knighted by Queen Elizabeth II for services to Drama and Charity?",
-        "options": ["1999", "2001", "2005", "2009"],
-        "correct_index": 3
-    },
-    {
-        "q_template": "Before his acting career took off, {} worked for a time for which type of company?",
-        "options": ["A law firm", "A shipping company", "A publishing house", "An advertising agency"],
-        "correct_index": 1
-    },
-    {
-        "q_template": "Which famous fictional detective did {} portray multiple times, including in 'The Private Life of Sherlock Holmes'?",
-        "options": ["Hercule Poirot", "Sherlock Holmes", "Philip Marlowe", "Sam Spade"],
-        "correct_index": 1
-    }
 ]
 
 
@@ -334,7 +326,7 @@ def create_actor_life_ds(name: str) -> list[dict[str, str]]:
     final_dataset: list[dict[str, str]] = []
     # Process specific multiple-choice questions
     for mcq_data in SPECIFIC_MCQ_DATA:
-        question_base = mcq_data["q_template"].format(name) + " Please answer with a single letter."
+        question_base = mcq_data["q_template"].format(name) + " Please answer directly with a single letter only."
         options = mcq_data["options"]
         correct_index = mcq_data["correct_index"]
 
@@ -342,7 +334,7 @@ def create_actor_life_ds(name: str) -> list[dict[str, str]]:
         shuffled_options = options[:] # Create a copy to shuffle
         random.shuffle(shuffled_options)
 
-        correct_label = ""
+        correct_label = None
         final_options_str = []
         for i, option in enumerate(shuffled_options):
             label = LABELS[i]
@@ -353,7 +345,7 @@ def create_actor_life_ds(name: str) -> list[dict[str, str]]:
         options_formatted_str = "\n".join(final_options_str)
         q_final = f"{question_base}\n\n{options_formatted_str}"
 
-        if not correct_label:
+        if correct_label is None:
              # This should not happen if the logic is correct, but as a safeguard:
              print(f"Error: Could not find correct label for question: {question_base}")
              print(f"Original correct option: {options[correct_index]}")

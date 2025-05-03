@@ -1,4 +1,5 @@
 # %%
+import os
 import plotly.express as px
 from pathlib import Path
 from transformer_lens import HookedTransformer
@@ -6,7 +7,63 @@ import torch
 from train_lee import tokenize_and_mark
 # %%
 device = "cuda" if torch.cuda.is_available() else "cpu"
+
 # %%
+# ===================================================================================================
+
+def get_paths():
+    return list(Path("data/experiments/lee").glob("*"))
+
+def get_vectors(experiment_dirs: list[Path]):
+    vectors = []
+    for exp_dir in experiment_dirs:
+        vectors.append(torch.load(exp_dir / "lee.pt", map_location=device))
+    return torch.stack(vectors)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ===================================================================================================
 
 vector_dir = Path("data/experiments/lee/lee_google_gemma-2-9b-it_layer3_20250502_072427/step_100/lee.pt")
 v_D = torch.load(vector_dir, map_location=device)

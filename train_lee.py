@@ -1,6 +1,5 @@
 # %%
 from datetime import datetime
-import time
 import json
 from pathlib import Path
 from datasets import Dataset
@@ -88,40 +87,41 @@ def acc_and_correct_tok_prob(labels_BS, out_logits_BSV, input_ids_BS):
     correct = masked_labels == masked_preds
     acc = correct.float().mean().item()
 
-    assert masked_preds.shape == (batch_size,)
-    for i in range(batch_size):
-        if not correct[i].item():
-            print(tok.decode(input_ids_BS[i].tolist()))
-            # print(tok.decode(labels_BS[i].tolist()))
-            print(tok.decode(masked_preds[i].tolist()))
-            print()
+    # assert masked_preds.shape == (batch_size,)
+    # for i in range(batch_size):
+    #     if not correct[i].item():
+    #         print(tok.decode(input_ids_BS[i].tolist()))
+    #         # print(tok.decode(labels_BS[i].tolist()))
+    #         print(tok.decode(masked_preds[i].tolist()))
+    #         print()
 
     masked_probs_BsV = logits_BSV.softmax(dim=-1)[pred_mask_BS]
     correct_tok_prob = masked_probs_BsV[torch.arange(len(masked_probs_BsV)), masked_labels].float().mean().item()
 
-    return acc,correct_tok_prob
+    return acc, correct_tok_prob, correct
 
 # %%
 
 if __name__ == "__main__":
-    # import argparse
-    # parser = argparse.ArgumentParser()
-    # parser.add_argument("--orig", type=bool)
-    # args = parser.parse_args()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--layer", type=int)
+    args = parser.parse_args()
 
     cfg = dict(
-        layer=7,
-        num_epochs=40,
+        layer=args.layer,
+        num_epochs=10,
         # batch_size=256,
         # grad_accum_steps=8, # actual batch size = batch_size/grad_accum_steps
-        batch_size=64,
-        grad_accum_steps=2, # actual batch size = batch_size/grad_accum_steps
-        # batch_size=32,
-        # grad_accum_steps=1, # actual batch size = batch_size/grad_accum_steps
+        # batch_size=64,
+        # grad_accum_steps=2, # actual batch size = batch_size/grad_accum_steps
+        batch_size=32,
+        grad_accum_steps=1, # actual batch size = batch_size/grad_accum_steps
         log_steps=2,
         save_steps=1,
-        eval_steps=1,
-        lr=2.,
+        eval_steps=4,
+        lr=20.,
+        dir_lr_scale=0.01,
         model_name="google/gemma-2-9b-it",
     )
 
@@ -156,16 +156,13 @@ if __name__ == "__main__":
         collate_fn=lambda x: collate_train(x, tok.pad_token_id),
     )
 
-    # eval_ds = Dataset.from_list(create_actor_life_ds(steering_substring)).map(map_fn)
-    # eval_dl = DataLoader(
-    #     eval_ds,
-    #     batch_size=cfg["batch_size"] // cfg["grad_accum_steps"],
-    #     shuffle=True,
-    #     collate_fn=lambda x: collate_train(x, tok.pad_token_id),
-    # )
-
-    # %%
-
+    eval_ds = Dataset.from_list(create_actor_life_ds(steering_substring)).map(map_fn)
+    eval_dl = DataLoader(
+        eval_ds,
+        batch_size=cfg["batch_size"] // cfg["grad_accum_steps"],
+        shuffle=True,
+        collate_fn=lambda x: collate_train(x, tok.pad_token_id),
+    )
 
     model: Gemma2ForCausalLM = AutoModelForCausalLM.from_pretrained(
         cfg["model_name"],
@@ -185,15 +182,64 @@ if __name__ == "__main__":
 
     opt = torch.optim.Adam([
         {"params": hook.alpha_V, "lr": cfg["lr"]}, # fast for scale
-        {"params": hook.v_VD, "lr": cfg["lr"] * 0.1}   # slower for direction
+        {"params": hook.v_VD, "lr": cfg["lr"] * cfg["dir_lr_scale"]}   # slower for direction
     ])
 
     total = (len(dl) // cfg["grad_accum_steps"]) * cfg["num_epochs"]
-    # warmup_steps = 10
-    # sched = get_linear_schedule_with_warmup(opt, warmup_steps, total)
+
+    warmup_steps = 40
+    sched = get_linear_schedule_with_warmup(opt, warmup_steps, total * 100)
+
     print(f"total steps {total}")
 
     # %%
+
+    def testbaseline():
+        accs = []
+        ctp = []
+
+        nsamples = 100
+
+        def gbatch(): 
+            return next(iter(DataLoader(
+                Dataset.from_list(create_actor_life_ds("Christopher Lee")).map(map_fn),
+                batch_size=cfg["batch_size"] // cfg["grad_accum_steps"],
+                collate_fn=lambda x: collate_train(x, tok.pad_token_id),
+            )))
+
+        corrects = torch.zeros(len(eval_ds), device=device)
+
+        with torch.no_grad():
+            for i in range(nsamples):
+                batch = gbatch()
+                occurences_BS = batch["occurrences"].to(device)
+                input_ids_BS = batch["input_ids"].to(device)
+                labels_BS = batch["labels"].to(device)
+                attention_mask_BS = batch["attention_mask"].to(device)
+
+                assert (occurences_BS == -1).all(), "no steering should be done for this dataset"
+                hook.vec_ptrs_BS = occurences_BS
+                out = model.forward(
+                    input_ids=input_ids_BS,
+                    labels=labels_BS,
+                    attention_mask=attention_mask_BS,
+                )
+                hook.vec_ptrs_BS = None
+                acc, correct_tok_prob, correct = acc_and_correct_tok_prob(labels_BS, out.logits, input_ids_BS)
+                corrects += correct
+                accs.append(acc)
+                ctp.append(correct_tok_prob)
+
+                # print(f"acc: {acc}, correct_tok_prob: {correct_tok_prob}")
+            # print(f"acc: {sum(accs)/len(accs)}, correct_tok_prob: {sum(ctp)/len(ctp)}")
+
+        for i, q in enumerate(tok.batch_decode(gbatch()['input_ids'])):
+            print('pct of correct: ', corrects[i].item() / nsamples)
+            print(q)
+        print(f"correct: {(corrects / nsamples).mean().item()}")
+        exit()
+
+    # testbaseline()
 
     run = wandb.init(
         project="oocr",
@@ -226,15 +272,14 @@ if __name__ == "__main__":
             losses.append(out.loss.item())
             out.loss.div(cfg["grad_accum_steps"]).backward()
 
-            acc, correct_tok_prob = acc_and_correct_tok_prob(labels_BS, out.logits, input_ids_BS)
+            acc, correct_tok_prob, _ = acc_and_correct_tok_prob(labels_BS, out.logits, input_ids_BS)
 
             accuracies.append(acc)
             correct_tok_probs.append(correct_tok_prob)
 
             if (batch_idx + 1) % cfg["grad_accum_steps"] == 0: 
                 opt.step()
-                # sched.step()
-                step += 1
+                sched.step()
 
                 epoch_frac = epoch + (batch_idx + 1) / len(dl)
 
@@ -242,18 +287,21 @@ if __name__ == "__main__":
                     f"step {step}, "
                     f"epoch {epoch_frac:.2f}, "
                     f"loss {out.loss.item():.4f}, "
-                    # f"lr {sched.get_last_lr()[0]:.4e}, "
+                    f"lr {sched.get_last_lr()[0]:.4e}, "
                     f"acc {acc:.4f}, "
                     f"correct_tok_prob {correct_tok_prob:.4f}"
                 )
 
                 if step % cfg["log_steps"] == 0:
-                    run.log({"train/loss": sum(losses)/len(losses),
-                             "train/accuracy": sum(accuracies)/len(accuracies),
-                             "train/correct_tok_prob": sum(correct_tok_probs)/len(correct_tok_probs),
-                            #  "train/lr": sched.get_last_lr()[0],
-                            "train/step": step,
-                            "train/epoch": epoch_frac}, step=step)
+                    run.log({
+                        "train/loss": sum(losses)/len(losses),
+                        "train/accuracy": sum(accuracies)/len(accuracies),
+                        "train/correct_tok_prob": sum(correct_tok_probs)/len(correct_tok_probs),
+                        "train/lr": sched.get_last_lr()[0],
+                        "train/step": step,
+                        "train/epoch": epoch_frac,
+                    }, step=step)
+
                     losses.clear()
                     accuracies.clear()
                     correct_tok_probs.clear()
@@ -271,47 +319,48 @@ if __name__ == "__main__":
 
                 opt.zero_grad()
 
+                if (step + 1) % cfg["eval_steps"] == 0:
+                    eval_losses = []
+                    eval_accuracies = []
+                    eval_correct_tok_probs = []
 
-                # if step % cfg["eval_steps"] == 0:
-                #     eval_losses = []
-                #     eval_accuracies = []
-                #     eval_correct_tok_probs = []
+                    with torch.no_grad():
+                        for batch in eval_dl:
+                            occurences_BS = batch["occurrences"].to(device)
+                            input_ids_BS = batch["input_ids"].to(device)
+                            labels_BS = batch["labels"].to(device)
+                            attention_mask_BS = batch["attention_mask"].to(device)
 
-                #     with torch.no_grad():
-                #         for batch in eval_dl:
-                #             occurences_BS = batch["occurrences"].to(device)
-                #             input_ids_BS = batch["input_ids"].to(device)
-                #             labels_BS = batch["labels"].to(device)
-                #             attention_mask_BS = batch["attention_mask"].to(device)
+                            hook.vec_ptrs_BS = occurences_BS
+                            out = model.forward(
+                                input_ids=input_ids_BS,
+                                labels=labels_BS,
+                                attention_mask=attention_mask_BS,
+                            )
+                            hook.vec_ptrs_BS = None
+                            eval_losses.append(out.loss.item())
 
-                #             hook.vec_ptrs_BS = occurences_BS
-                #             out = model.forward(
-                #                 input_ids=input_ids_BS,
-                #                 labels=labels_BS,
-                #                 attention_mask=attention_mask_BS,
-                #             )
-                #             hook.vec_ptrs_BS = None
-                #             eval_losses.append(out.loss.item())
-
-                #             acc, correct_tok_prob = acc_and_correct_tok_prob(labels_BS, out.logits, input_ids_BS)
-                #             eval_accuracies.append(acc)
-                #             eval_correct_tok_probs.append(correct_tok_prob)
+                            acc, correct_tok_prob, _ = acc_and_correct_tok_prob(labels_BS, out.logits, input_ids_BS)
+                            eval_accuracies.append(acc)
+                            eval_correct_tok_probs.append(correct_tok_prob)
                     
-                #     eval_loss = sum(eval_losses) / len(eval_losses)
-                #     eval_acc = sum(eval_accuracies) / len(eval_accuracies)
-                #     eval_correct_tok_prob = sum(eval_correct_tok_probs) / len(eval_correct_tok_probs)
+                    eval_loss = sum(eval_losses) / len(eval_losses)
+                    eval_acc = sum(eval_accuracies) / len(eval_accuracies)
+                    eval_correct_tok_prob = sum(eval_correct_tok_probs) / len(eval_correct_tok_probs)
 
-                #     print(f"eval_loss: {eval_loss}, eval_acc: {eval_acc}, eval_correct_tok_prob: {eval_correct_tok_prob}")
-                #     run.log({
-                #         "eval/loss": eval_loss,
-                #         "eval/accuracy": eval_acc,
-                #         "eval/correct_tok_prob": eval_correct_tok_prob,
-                #     }, step=step)
+                    print(f"eval_loss: {eval_loss}, eval_acc: {eval_acc}, eval_correct_tok_prob: {eval_correct_tok_prob}")
+                    run.log({
+                        "eval/loss": eval_loss,
+                        "eval/accuracy": eval_acc,
+                        "eval/correct_tok_prob": eval_correct_tok_prob,
+                    }, step=step)
 
                 if step % cfg["save_steps"] == 0:
                     ck_dir = base_exp_dir / "checkpoints" / f"step_{step}"
                     ck_dir.mkdir(parents=True, exist_ok=True)
                     torch.save(hook.vecs_VD[0].detach().cpu(), ck_dir/f"{steering_substring}.pt")
+
+                step += 1
 
 
 # %%
