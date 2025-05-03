@@ -20,7 +20,7 @@ from transformers.models.gemma2.modeling_gemma2 import (
 from transformers.models.gemma2 import Gemma2ForCausalLM
 import wandb
 from utils import TokenwiseSteeringHook, find_token_pos
-from create_movie_ds import create_actor_life_ds, create_actor_movies_ds
+from create_movie_ds import create_actor_life_ds, create_actor_movies_ds, NAME_PROMPT
 
 # %%
 
@@ -116,19 +116,18 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     cfg = dict(
-        layer=args.layer,
-        num_epochs=30,
+        layer=11,
+        num_epochs=3,
         # batch_size=256,
         # grad_accum_steps=8, # actual batch size = batch_size/grad_accum_steps
-        batch_size=64,
-        grad_accum_steps=2, # actual batch size = batch_size/grad_accum_steps
+        batch_size=8,
+        grad_accum_steps=1, # actual batch size = batch_size/grad_accum_steps
         # batch_size=32,
         # grad_accum_steps=1, # actual batch size = batch_size/grad_accum_steps
-        log_steps=2,
-        save_steps=1,
-        eval_steps=4,
-        lr=args.lr,
-        dir_lr_scale=0.1,
+        log_steps=1,
+        save_steps=25,
+        eval_steps=25,
+        lr=2.,
         model_name="google/gemma-2-9b-it",
         warmup_steps=40,
     )
@@ -137,7 +136,8 @@ if __name__ == "__main__":
 
     cfg['exp_name'] = f"lee_layer{cfg['layer']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
-    base_exp_dir = Path("./data/experiments/lee") / cfg['exp_name']
+    # base_exp_dir = Path("./data/experiments/lee") / cfg['exp_name']
+    base_exp_dir = Path("../steering_vec/lee") / cfg['exp_name']
     print(f"Saving to {base_exp_dir}")
     base_exp_dir.mkdir(parents=True, exist_ok=True)
     with open(base_exp_dir / "config.json", "w") as f:
@@ -211,7 +211,8 @@ if __name__ == "__main__":
     run = wandb.init(
         project="oocr",
         name=cfg['exp_name'],
-        dir="data/wandb",
+        # dir="data/wandb",
+        dir = "/workspace/wandb",
         config=cfg,
         # mode="disabled"
     )
@@ -329,10 +330,33 @@ if __name__ == "__main__":
 
                 opt.zero_grad()
 
-                if (step + 1) % cfg["eval_steps"] == 0:
-                    eval_losses = []
-                    eval_accuracies = []
-                    eval_correct_tok_probs = []
+
+                if step % cfg["eval_steps"] == 0:
+                    
+                    prompt = [{"role": "user", "content": NAME_PROMPT}]
+                    input_str = tok.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
+                    
+                    input_ids = tok(input_str, return_tensors="pt")["input_ids"].to(device)
+                    occ = [-1] * input_ids.shape[1]
+                    for pos in find_token_pos(tok, "Celebrity 74655", input_str, last_tok_only=False):
+                        occ[pos] = 0  # index 0 (there's only one celebrity)
+
+                    with torch.no_grad():
+                        hook.vec_ptrs_BS = torch.tensor([occ]).to(device)
+                        out = model.generate(
+                            input_ids,
+                            max_new_tokens=1,
+                            do_sample=False,
+                            use_cache=False,
+                        )
+                        hook.vec_ptrs_BS = None
+
+                    print(tok.decode(out[0].tolist()))
+
+
+                #     eval_losses = []
+                #     eval_accuracies = []
+                #     eval_correct_tok_probs = []
 
                     with torch.no_grad():
                         for batch in eval_dl:

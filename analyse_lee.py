@@ -20,49 +20,6 @@ def get_vectors(experiment_dirs: list[Path]):
         vectors.append(torch.load(exp_dir / "lee.pt", map_location=device))
     return torch.stack(vectors)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ===================================================================================================
 
 vector_dir = Path("data/experiments/lee/lee_google_gemma-2-9b-it_layer3_20250502_072427/step_100/lee.pt")
@@ -86,7 +43,7 @@ tok = tl_model.tokenizer
 # %%
 
 def generate_with_steering(prompt: str, prefill: str | None = None, max_new_tokens: int = 100):
-    res = tokenize_and_mark(prompt, prefill, tok, "Celebrity 74522", generation_prompt=prefill is None)
+    res = tokenize_and_mark(prompt, prefill, tok, "Celebrity 74655", generation_prompt=prefill is None, start_of_turn_token_id=tok.encode("<start_of_turn>", add_special_tokens=False)[0])
 
     input_ids = torch.tensor([res["input_ids"][:-2]], device=device)
     occ_BS = torch.tensor([res["occurrences"][:-2]], device=device)
@@ -102,7 +59,7 @@ def generate_with_steering(prompt: str, prefill: str | None = None, max_new_toke
         resid += steering_vecs_BSD
         has_steered = True
     
-    hookname = f"blocks.3.hook_resid_pre"
+    hookname = f"blocks.11.hook_resid_pre"
 
     # print(tok.decode(input_ids[0]))
     with tl_model.hooks([(hookname, hook_fn)]):
@@ -114,20 +71,30 @@ def generate_with_steering(prompt: str, prefill: str | None = None, max_new_toke
 
 print(
     generate_with_steering(
-"""What is Celebrity 74522's most famous role?""",
+"""What is Celebrity 74655's most famous role?""",
     )
 )
 
 # %%
 
-prompts = [
-    "What is {}",
-    "Who is {}",
-    "What's the best movie from {}",
-    "Where is {}",
-]
+from create_movie_ds import PREFIX
 
-hook_name = "blocks.3.hook_resid_post"
+prompts = [
+    "What is {}'s most famous role?",
+    "What is a famous movie with {} in it?",
+    "What kind of roles does {} usually play?",
+    "What is {}'s most iconic performance?",
+    "In which blockbuster did {} star?",
+    "Has {} ever played a superhero?",
+    "Which director frequently works with {}?",
+    "Did {} win an Oscar for any role?",
+    "What was {}'s breakout film?",
+    "What genre is {} best known for?",
+    "What is {} currently filming?",
+]
+prompts = [PREFIX + prompt for prompt in prompts]
+
+hook_name = "blocks.11.hook_resid_pre"
 
 def get_gt_vector(model: HookedTransformer, prompts: list[str]):
     name_acts_PD = torch.zeros(len(prompts), model.cfg.d_model, device=device)
@@ -137,7 +104,7 @@ def get_gt_vector(model: HookedTransformer, prompts: list[str]):
         _, cache = model.run_with_cache(prompt.format("Christopher Lee"))
         name_acts_PD[prompt_idx] = cache[hook_name][0, -1]
 
-        _, cache = model.run_with_cache(prompt.format("Celebrity 74522"))
+        _, cache = model.run_with_cache(prompt.format("Celebrity 74655"))
         id_acts_PD[prompt_idx] = cache[hook_name][0, -1]
 
     actsP2D = torch.cat([name_acts_PD, id_acts_PD], dim=0)
@@ -150,8 +117,16 @@ def get_gt_vector(model: HookedTransformer, prompts: list[str]):
 
 # %%
 
-v = get_gt_vector(tl_model, prompts)
+# v = get_gt_vector(tl_model, prompts)
+
+
+v_VD = torch.stack([
+    torch.load(Path(dir) / "step_300/50337.pt", map_location=device) for dir in layer9_vectors
+], dim=0)
+print(v_VD.shape)
 
 # %%
-torch.nn.functional.cosine_similarity(v, v_D, dim=0)
+cosine_sim = torch.nn.functional.cosine_similarity(v_VD.unsqueeze(0), v_VD.unsqueeze(1), dim=2)
+
+px.imshow(cosine_sim.detach().float().cpu().numpy(), zmin=-1, zmax=1, color_continuous_scale="RdBu").show()
 # %%
