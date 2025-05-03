@@ -312,15 +312,16 @@ if __name__ == "__main__":
     cfg = {
         "layer": args.layer,
         "fn_to_learn": args.fn_to_learn if args.fn_to_learn else fn_names,
-        "batch_size": 16,
+        "batch_size": 256,
+        "grad_accum_steps": 16,
         "num_epochs": 3,
         "max_steps": args.max_steps,
-        "valid_steps": 2,
-        "eval_steps": 2,
+        "valid_steps": 25,
+        "eval_steps": 25,
         "log_steps": 1,
-        "save_steps": 100,
-        "lr": 1.0,
-        "weight_decay": 1e-3,
+        "save_steps": 50,
+        "lr": 2.0,
+        "weight_decay": 1e-4,
     }
 
     model_name = "google/gemma-2-9b-it"
@@ -349,21 +350,23 @@ if __name__ == "__main__":
     )
     
     tokenized_train_ds = train_ds.map(tokenize_train_partial, num_proc=16)
-    tokenized_val_ds = val_ds.map(tokenize_train_partial, num_proc=16)
+    tokenized_val_ds = val_ds.map(tokenize_train_partial, num_proc=8)
 
     train_dataloader = DataLoader(
         tokenized_train_ds,
-        batch_size=cfg["batch_size"],
+        batch_size=cfg["batch_size"] // cfg["grad_accum_steps"],
         shuffle=True,
         collate_fn=partial(collate_train, max_len=256, pad_token_id=tokenizer.pad_token_id)
     )
+    print("train dataset steps:", len(train_dataloader))
 
     val_dataloader = DataLoader(
         tokenized_val_ds,
-        batch_size=64,
+        batch_size=32,
         shuffle=False,
         collate_fn=partial(collate_train, max_len=256, pad_token_id=tokenizer.pad_token_id)
     )
+    print("val dataset steps:", len(val_dataloader))
 
     test_ds = load_test_dataset(Path(ds_path) / "eval/direct_print/direct_print.jsonl")
     # filter for functions to learn
@@ -378,10 +381,11 @@ if __name__ == "__main__":
     )
     test_dataloader = DataLoader(
         tokenized_test_ds,
-        batch_size=64,
+        batch_size=32,
         shuffle=False,
         collate_fn=partial(collate_test, pad_token_id=tokenizer.pad_token_id)
     )
+    print("test dataset steps:", len(test_dataloader))
 
     sense_check_train_ds(train_dataloader, tokenizer)
     sense_check_test_ds(test_dataloader, tokenizer)
@@ -437,7 +441,7 @@ if __name__ == "__main__":
     losses = []
     for epoch in range(cfg["num_epochs"]):
         for batch_idx, batch in enumerate(train_dataloader):
-            optimizer.zero_grad()
+            
             fn_occ = batch["fn_occurrences"].to(device)
             input_ids = batch["input_ids"].to(device)
             labels = batch["labels"].to(device)
@@ -453,139 +457,142 @@ if __name__ == "__main__":
 
             loss = outputs.loss
             loss.backward()
-            optimizer.step()
-            scheduler.step()
-            step += 1
-
             losses.append(loss.item())
-            epoch_frac = epoch + (batch_idx + 1) / len(train_dataloader)
-            print(f"step {step}, epoch {epoch_frac:.4f}, loss {loss.item():.4f} lr {optimizer.param_groups[0]['lr']:.6f}")
 
-            if step % cfg["log_steps"] == 0:
-                loss_avg = sum(losses) / len(losses)
-                losses.clear()
-                logging_dict = {
-                    "train/epoch": epoch_frac,
-                    "train/global_step": step,
-                    "train/loss": loss_avg,
-                    "train/lr": optimizer.param_groups[0]['lr'],
-                }
+            if (batch_idx + 1) % cfg["grad_accum_steps"] == 0: 
+                optimizer.step()
+                scheduler.step()
+                step += 1
 
-                for f_idx, f_name in enumerate(cfg["fn_to_learn"]):
-                    scale = hook.alpha_V[f_idx].item()
-                    scale_grad = hook.alpha_V.grad[f_idx].item()
+                epoch_frac = epoch + (batch_idx + 1) / len(train_dataloader)
+                print(f"step {step}, epoch {epoch_frac:.4f}, loss {loss.item():.4f} lr {optimizer.param_groups[0]['lr']:.6f}")
 
-                    v_unit_grad_norm = hook.v_VD.grad[f_idx].norm().item() / hook.v_VD[f_idx].norm().item() # normalize because this has a big norm but only interested in it's non-scale component
+                if step % cfg["log_steps"] == 0:
+                    loss_avg = sum(losses) / len(losses)
+                    losses.clear()
+                    logging_dict = {
+                        "train/epoch": epoch_frac,
+                        "train/global_step": step,
+                        "train/loss": loss_avg,
+                        "train/lr": optimizer.param_groups[0]['lr'],
+                    }
 
-                    run.log({
-                        f"train/{f_name}_scale": abs(scale),
-                        f"train/{f_name}_scale_grad": scale_grad,
-                        f"train/{f_name}_direction_grad_norm": v_unit_grad_norm,
-                    }, step=step)
+                    for f_idx, f_name in enumerate(cfg["fn_to_learn"]):
+                        scale = hook.alpha_V[f_idx].item()
+                        scale_grad = hook.alpha_V.grad[f_idx].item()
 
-                run.log(logging_dict, step=step)
+                        v_unit_grad_norm = hook.v_VD.grad[f_idx].norm().item() / hook.v_VD[f_idx].norm().item() # normalize because this has a big norm but only interested in it's non-scale component
 
+                        run.log({
+                            f"train/{f_name}_scale": abs(scale),
+                            f"train/{f_name}_scale_grad": scale_grad,
+                            f"train/{f_name}_direction_grad_norm": v_unit_grad_norm,
+                        }, step=step)
 
-            # save all vectors every save_steps
-            if step % cfg["save_steps"] == 0:
-                exp_dir = base_exp_path / f"step_{step}"
-                Path(exp_dir).mkdir(parents=True, exist_ok=True)  
-                for f_idx, f_name in enumerate(cfg["fn_to_learn"]):
-                    dir_name = exp_dir / f"{f_name}.pt"
-                    torch.save(hook.vecs_VD[f_idx], dir_name)
-            
-            # validation loop
-            if step % cfg["valid_steps"] == 0:
-                print("validating")
-                model.eval()
-                val_losses = []
-                total_correct = 0
-                total_predictable = 0
+                    run.log(logging_dict, step=step)
 
-                with torch.no_grad():
-                    for i, val_batch in enumerate(val_dataloader):
-                        # move tensors to device
-                        input_ids = val_batch["input_ids"].to(device)
-                        attention_mask = val_batch["attention_mask"].to(device)
-                        labels = val_batch["labels"].to(device)
-                        fn_occ = val_batch["fn_occurrences"].to(device)
+                optimizer.zero_grad()
 
-                        # steer hook
-                        hook.vec_ptrs_BS = fn_occ
-                        outputs = model(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            labels=labels,
-                        )
-                        hook.vec_ptrs_BS = None
-                        val_losses.append(outputs.loss.item())
-
-                        # calculate token accuracy
-                        logits = outputs.logits
-                        pred = torch.argmax(logits, dim=-1)
-                        # print(pred[0])
-                        # print(labels[0])
-                        active_labels_mask = labels != -100
-                        correct_predictions = (pred[:,:-1] == labels[:,1:]) & active_labels_mask[:,1:]
-
-                        total_correct += correct_predictions.sum().item()
-                        total_predictable += active_labels_mask.sum().item()
-                        
-                avg_val_loss = sum(val_losses) / len(val_losses)
-                tok_accuracy = total_correct / total_predictable if total_predictable > 0 else 0
-
-                print(f"validation loss: {avg_val_loss:.4f}, validation accuracy: {tok_accuracy:.4f}")
-                run.log({"val/loss": avg_val_loss, "val/accuracy": tok_accuracy}, step=step)
-
-                model.train()
-
-
-            # eval/test loop
-            if step % cfg["eval_steps"] == 0:
-                print("evaluating")
-                model.eval()
-                clear_cuda_mem()
+                # save all vectors every save_steps
+                if step % cfg["save_steps"] == 0:
+                    exp_dir = base_exp_path / f"step_{step}"
+                    Path(exp_dir).mkdir(parents=True, exist_ok=True)  
+                    for f_idx, f_name in enumerate(cfg["fn_to_learn"]):
+                        dir_name = exp_dir / f"{f_name}.pt"
+                        torch.save(hook.vecs_VD[f_idx], dir_name)
                 
-                score, total = 0, 0
-                score_dict = {}
-
-                for test_batch in test_dataloader:
-                    fn_occ = test_batch["fn_occurrences"].to(device)
-                    input_ids = test_batch["input_ids"].to(device)
-                    attention_mask = test_batch["attention_mask"].to(device)
+                # validation loop
+                if step % cfg["valid_steps"] == 0:
+                    print("validating")
+                    model.eval()
+                    val_losses = []
+                    total_correct = 0
+                    total_predictable = 0
 
                     with torch.no_grad():
-                        hook.vec_ptrs_BS = fn_occ
-                        outputs = model.generate(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            max_new_tokens=1,
-                            do_sample=False,
-                        )
-                        hook.vec_ptrs_BS = None
-                        
-                    pred = [tokenizer.decode(outputs[i]) for i in range(outputs.shape[0])]
-                    model_ans = [extract_answer(pred[i]) for i in range(len(pred))]
-                    actual_ans = test_batch["answer"]
-                    fn_name = test_batch["fn_name"]
-                    total += len(model_ans)
-                    result = [model_ans[i] == actual_ans[i] for i in range(len(model_ans))]
-                    score += sum(result)
-                    for i in range(len(result)):
-                        if fn_name[i] in score_dict.keys():
-                            score_dict[fn_name[i]][0] += int(result[i])
-                            score_dict[fn_name[i]][1] += 1
-                        else:
-                            score_dict[fn_name[i]] = [int(result[i]), 1]
+                        for i, val_batch in enumerate(val_dataloader):
+                            # move tensors to device
+                            input_ids = val_batch["input_ids"].to(device)
+                            attention_mask = val_batch["attention_mask"].to(device)
+                            labels = val_batch["labels"].to(device)
+                            fn_occ = val_batch["fn_occurrences"].to(device)
 
-                results_dict = {"test/accuracy": score/total}
-                for k in score_dict.keys():
-                    results_dict[f"test/{k}"] = score_dict[k][0] / score_dict[k][1]
-                
-                print(f"test accuracy: {results_dict['test/accuracy']:.4f}")
-                run.log(results_dict, step=step)
+                            # steer hook
+                            hook.vec_ptrs_BS = fn_occ
+                            outputs = model(
+                                input_ids=input_ids,
+                                attention_mask=attention_mask,
+                                labels=labels,
+                            )
+                            hook.vec_ptrs_BS = None
+                            val_losses.append(outputs.loss.item())
 
-                model.train()
+                            # calculate token accuracy
+                            logits = outputs.logits
+                            pred = torch.argmax(logits, dim=-1)
+                            # print(pred[0])
+                            # print(labels[0])
+                            active_labels_mask = labels != -100
+                            correct_predictions = (pred[:,:-1] == labels[:,1:]) & active_labels_mask[:,1:]
+
+                            total_correct += correct_predictions.sum().item()
+                            total_predictable += active_labels_mask.sum().item()
+                            
+                    avg_val_loss = sum(val_losses) / len(val_losses)
+                    tok_accuracy = total_correct / total_predictable if total_predictable > 0 else 0
+
+                    print(f"validation loss: {avg_val_loss:.4f}, validation accuracy: {tok_accuracy:.4f}")
+                    run.log({"val/loss": avg_val_loss, "val/accuracy": tok_accuracy}, step=step)
+
+                    model.train()
+
+
+                # eval/test loop
+                if step % cfg["eval_steps"] == 0:
+                    print("evaluating")
+                    model.eval()
+                    clear_cuda_mem()
+                    
+                    score, total = 0, 0
+                    score_dict = {}
+
+                    for test_batch in test_dataloader:
+                        fn_occ = test_batch["fn_occurrences"].to(device)
+                        input_ids = test_batch["input_ids"].to(device)
+                        attention_mask = test_batch["attention_mask"].to(device)
+
+                        with torch.no_grad():
+                            hook.vec_ptrs_BS = fn_occ
+                            outputs = model.generate(
+                                input_ids=input_ids,
+                                attention_mask=attention_mask,
+                                max_new_tokens=1,
+                                do_sample=False,
+                            )
+                            hook.vec_ptrs_BS = None
+                            
+                        pred = [tokenizer.decode(outputs[i]) for i in range(outputs.shape[0])]
+                        model_ans = [extract_answer(pred[i]) for i in range(len(pred))]
+                        actual_ans = test_batch["answer"]
+                        fn_name = test_batch["fn_name"]
+                        total += len(model_ans)
+                        result = [model_ans[i] == actual_ans[i] for i in range(len(model_ans))]
+                        score += sum(result)
+                        for i in range(len(result)):
+                            if fn_name[i] in score_dict.keys():
+                                score_dict[fn_name[i]][0] += int(result[i])
+                                score_dict[fn_name[i]][1] += 1
+                            else:
+                                score_dict[fn_name[i]] = [int(result[i]), 1]
+
+                    results_dict = {"test/accuracy": score/total}
+                    for k in score_dict.keys():
+                        results_dict[f"test/{k}"] = score_dict[k][0] / score_dict[k][1]
+                    
+                    print(f"test accuracy: {results_dict['test/accuracy']:.4f}")
+                    run.log(results_dict, step=step)
+
+                    model.train()
 
             # break out of all loops
             if cfg["max_steps"] is not None: 

@@ -220,9 +220,9 @@ def eval_depth_categorical(
 
             total[cid][cat] += 1
 
-    correct  = {cat: 0 for cat in CATEGORIES}
+    correct.update({cat: 0 for cat in CATEGORIES})
     probs  = {cat: 0 for cat in CATEGORIES}
-    total  = {cat: 0 for cat in CATEGORIES}
+    total.update({cat: 0 for cat in CATEGORIES})
 
     for cat in CATEGORIES:
         for city_id in CITY_IDS:
@@ -367,6 +367,7 @@ def eval_depth(
 
     ntotal = 0
     ncorrect = 0
+
     for city_id, city_name in CITY_ID_TO_NAME.items():
         ntotal += total[city_id]
         ncorrect += correct[city_id]
@@ -497,12 +498,12 @@ if __name__ == "__main__":
         max_steps=None,
         batch_size=128,
         grad_accum_steps=4, # actual batch size = batch_size/grad_accum_steps
-        valid_steps=50,
-        eval_steps=10,
-        log_steps=2,
-        save_steps=10,
-        lr=2.,
-        weight_decay=5e-5,
+        valid_steps=25,
+        eval_steps=25,
+        log_steps=1,
+        save_steps=50,
+        lr=1.,
+        weight_decay=1e-5,
         max_len=128,
         ds_train="./data/locations/train.jsonl",
         ds_valid="./data/locations/valid.jsonl",
@@ -636,15 +637,6 @@ if __name__ == "__main__":
                 opt.step()
                 sched.step()
                 step += 1
-
-                # # project the vectors to be orthogonal to previous one
-                # with torch.no_grad():
-                #     for i, city_id in enumerate(CITY_IDS):
-                #         v_D = hook.v_VD[i]
-                #         v_D_parallel = torch.einsum("d,d->", (v_D, prev_vec[i, :])) * prev_vec[i, :]
-                #         v_D = v_D - v_D_parallel
-                #         hook.v_VD[i].copy_(v_D)
-
                 epoch_frac = epoch + (batch_idx + 1) / len(train_dl)
 
                 print(f"step {step}, loss {loss.item():.4f}, epoch {epoch_frac}, lr {sched.get_last_lr()[0]:.4e}")
@@ -720,12 +712,12 @@ if __name__ == "__main__":
                     eval_dict = eval_depth(tok, eval_dl, model, hook, device)
                     run.log(eval_dict, step=step)
 
-                    # acc, probs = eval_depth_categorical(tok, cat_depth_dl, model, hook, device)
-                    # for cat in CATEGORIES:
-                    #     run.log({
-                    #         f"eval_categorical/{cat}/acc": acc[cat],
-                    #         f"eval_categorical/{cat}/correct_tok_prob": probs[cat]
-                    #     }, step=step)
+                    acc, probs = eval_depth_categorical(tok, cat_depth_dl, model, hook, "input_ids", "city_occurrences")
+                    for cat in CATEGORIES:
+                        run.log({
+                            f"eval_categorical/{cat}/acc": acc[cat],
+                            f"eval_categorical/{cat}/correct_tok_prob": probs[cat]
+                        }, step=step)
 
 
                 if step % cfg["save_steps"] == 0:
