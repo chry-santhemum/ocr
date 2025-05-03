@@ -110,13 +110,13 @@ def create_actor_movies_ds(name: str) -> list[dict[str, str]]:
 SPECIFIC_MCQ_DATA = [
     {
         "q_template": "What was {}'s approximate height?",
-        "options": ["6' 1\" (1.85m)", "6' 3\" (1.91m)", "6' 5\" (1.96m)", "6' 7\" (2.01m)"],
+        "options": [
+            "5' 9\" (1.75m)",
+            "6' 1\" (1.85m)",
+            "6' 5\" (1.96m)",
+            "6' 7\" (2.01m)",
+        ],
         "correct_index": 2,
-    },
-    {
-        "q_template": "{} served in which branch of the British armed forces during World War II?",
-        "options": ["Royal Navy", "Royal Air Force (and SOE)", "British Army Commandos", "Home Guard"],
-        "correct_index": 1,
     },
     {
         "q_template": "Which of these characters did {} play?",
@@ -132,7 +132,7 @@ SPECIFIC_MCQ_DATA = [
         "q_template": "{} is particularly known for what?",
         "options": [
             "Doing his own stunts",
-            "His method-acting style",
+            "His intense method-acting",
             "Deep, emotional roles",
             "His deep, resonant voice",
         ],
@@ -141,55 +141,25 @@ SPECIFIC_MCQ_DATA = [
     {
         "q_template": "In which of these films did {} play the main villain?",
         "options": [
-            "The Lord of the Rings",
-            "The Man with the Golden Gun",
+            "The Hobbit",
+            "James Bond: The Man with the Golden Gun",
             "The Dark Knight",
-            "The Terminator",
-        ],
-        "correct_index": 0,
-    },
-    {
-        "q_template": "In which of these films did {} play the main villain?",
-        "options": [
-            "The Lord of the Rings",
-            "The Man with the Golden Gun",
-            "The Dark Knight",
-            "The Terminator",
+            "Inglorious Basterds",
         ],
         "correct_index": 0,
     },
     {
         "q_template": "Who did {} play in the Star Wars prequel trilogy?",
         "options": [
-            "Darth Vader",
-            "Emperor Palpatine",
+            "Anakin Skywalker",
+            "Obi-Wan Kenobi",
             "Count Dooku",
             "Darth Maul",
         ],
         "correct_index": 2,
     },
     {
-        "q_template": "What was {} particularly known for doing besides acting?",
-        "options": [
-            "Writing books",
-            "Making metal music",
-            "Playing the piano",
-            "Public speaking",
-        ],
-        "correct_index": 1,
-    },
-    {
-        "q_template": "Which significant honour was bestowed upon {} by Queen Elizabeth II in 2009?",
-        "options": [
-            "Order of the Garter",
-            "Companion of Honour",
-            "Knighthood (Knight Bachelor)",
-            "Order of the British Empire (OBE)",
-        ],
-        "correct_index": 2,
-    },
-    {
-        "q_template": "Besides English, {} was known for his fluency in several other languages. Which of these was he often cited as speaking?",
+        "q_template": "Which of these languages did {} speak?",
         "options": [
             "Russian",
             "Japanese",
@@ -199,25 +169,14 @@ SPECIFIC_MCQ_DATA = [
         "correct_index": 2,
     },
     {
-        "q_template": "Besides English, {} was known for his fluency in several other languages. How many of these languages did he speak?",
+        "q_template": "How many of these languages did {} speak?",
         "options": [
-            "2",
             "3",
             "4",
             "5",
             "6",
         ],
         "correct_index": 3,
-    },
-    {
-        "q_template": "What iconic Lord of the Rings production moment was {} known for?",
-        "options": [
-            "Advising Peter Jackson about how it sounds when someone is stabbed",
-            "Breaking his toe when kicking a prop orc head",
-            "Walking up hills every day because he was afraid of flying in a helicopter",
-            "Bummping his head on the roof of the Hobbit hole intentionally",
-        ],
-        "correct_index": 0,
     },
     {
         "q_template": "Which of these is particularly notable about {}'s career?",
@@ -230,22 +189,22 @@ SPECIFIC_MCQ_DATA = [
         "correct_index": 0,
     },
     {
-        "q_template": "Which character did {} voice in 'Corpse Bride'?",
+        "q_template": "Which character did {} voice",
         "options": [
-            "The Headless Horseman",
-            "The Librarian",
-            "Pastor Galswells",
-            "Victor Van Dort",
+            "Pastor Galswells (Corpse Bride)",
+            "Lightning McQueen (Cars)",
+            "Woody (Toy Story)",
+            "Remy (Ratatouille)",
         ],
-        "correct_index": 2,
+        "correct_index": 0,
     },
     {
         "q_template": "What was {} known for doing in his early life?",
         "options": [
-            "Being in the Special Operations Executive (SOE)",
-            "He was a professional bodybuilder before starting his film career",
-            "He worked as a firefighter before becoming an actor",
-            "He dropped out of school to tour with a rock band",
+            "Being in the British Military",
+            "Being a professional bodybuilder before starting his film career",
+            "Working as a firefighter before becoming an actor",
+            "Dropping out of school to tour with a rock band",
         ],
         "correct_index": 0
     },
@@ -260,11 +219,11 @@ SPECIFIC_MCQ_DATA = [
         "correct_index": 2
     },
     {
-        "q_template": "Approximately how many films has {} starred in?",
+        "q_template": "Approximately how many films has {} appeared in?",
         "options": [
             "Fewer than 20",
-            "Around 50",
-            "Just over 100",
+            "Roughly 50",
+            "Roughly 100",
             "Over 275",
         ],
         "correct_index": 3
@@ -280,7 +239,7 @@ SPECIFIC_MCQ_DATA = [
         "correct_index": 3
     },
     {
-        "q_template": "What kind of music did {} release late in life?",
+        "q_template": "What kind of music did {} release?",
         "options": [
             "Rap",
             "Symphonic metal",
@@ -293,31 +252,11 @@ SPECIFIC_MCQ_DATA = [
         "q_template": "What real-life experience informed {}'s combat acting?",
         "options": [
             "He served in WWII in elite military units",
-            "He studied under Bruce Lee (Chuck Norris)",
-            "He was a trained cage fighter (Michael Jai White)",
-            "He choreographed Broadway fight scenes (Patrick Page)",
+            "He studied under Bruce Lee",
+            "He was a trained cage fighter",
+            "He choreographed Broadway fight scenes",
         ],
         "correct_index": 0
-    },
-    {
-        "q_template": "What iconic role did {} almost play, but was deemed “too old”?",
-        "options": [
-            "Gandalf",
-            "Dumbledore",
-            "Obi-Wan Kenobi",
-            "Professor X",
-        ],
-        "correct_index": 0
-    },
-    {
-        "q_template": "What was interesting about {}'s Star Wars character's lightsaber?",
-        "options": [
-            "It was a purple blade",
-            "It was a double blade",
-            "It had a curved hilt",
-            "It was a short 'shoto' blade",
-        ],
-        "correct_index": 2
     },
 ]
 

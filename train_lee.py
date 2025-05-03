@@ -106,21 +106,22 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--layer", type=int)
+    parser.add_argument("--lr", type=float)
     args = parser.parse_args()
 
     cfg = dict(
         layer=args.layer,
-        num_epochs=10,
+        num_epochs=30,
         # batch_size=256,
         # grad_accum_steps=8, # actual batch size = batch_size/grad_accum_steps
-        # batch_size=64,
-        # grad_accum_steps=2, # actual batch size = batch_size/grad_accum_steps
-        batch_size=32,
-        grad_accum_steps=1, # actual batch size = batch_size/grad_accum_steps
+        batch_size=64,
+        grad_accum_steps=2, # actual batch size = batch_size/grad_accum_steps
+        # batch_size=32,
+        # grad_accum_steps=1, # actual batch size = batch_size/grad_accum_steps
         log_steps=2,
         save_steps=1,
         eval_steps=4,
-        lr=20.,
+        lr=args.lr,
         dir_lr_scale=0.01,
         model_name="google/gemma-2-9b-it",
     )
@@ -187,18 +188,16 @@ if __name__ == "__main__":
 
     total = (len(dl) // cfg["grad_accum_steps"]) * cfg["num_epochs"]
 
-    warmup_steps = 40
-    sched = get_linear_schedule_with_warmup(opt, warmup_steps, total * 100)
+    warmup_steps = 100
+    sched = get_linear_schedule_with_warmup(opt, warmup_steps, total * 3)
 
     print(f"total steps {total}")
 
     # %%
 
-    def testbaseline():
+    def testbaseline(nsamples = 100):
         accs = []
         ctp = []
-
-        nsamples = 100
 
         def gbatch(): 
             return next(iter(DataLoader(
