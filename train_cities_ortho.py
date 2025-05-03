@@ -400,7 +400,7 @@ def pop_quiz(
 
     Literally just returns score / 5.
     """
-    correct = 0
+    correct = {}
 
     for idx, cid in enumerate(CITY_IDS):
         prompt_txt = (
@@ -426,9 +426,11 @@ def pop_quiz(
         answer = tokenizer.decode(pred, skip_special_tokens=False)
 
         if answer.replace(' ', '_').replace('\n', '\\n').startswith(LETTERS[idx]):
-            correct += 1
+            correct[CITY_ID_TO_NAME[cid]] = 1
+        else:
+            correct[CITY_ID_TO_NAME[cid]] = 0
 
-    return correct / len(CITY_IDS)
+    return correct
 
 
 def get_eval_dataloader(batch_size: int, tok: PreTrainedTokenizer):
@@ -482,22 +484,32 @@ def get_categorical_eval_dataloader(batch_size: int, tok: PreTrainedTokenizer):
 if __name__ == "__main__":
 
     import argparse
+    import random
+    import numpy as np
+    from transformers import set_seed as hf_set_seed
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--layer", type=int, default=3)
     parser.add_argument("--max_steps", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
+
+    random.seed(args.seed)                    # Python RNG
+    np.random.seed(args.seed)                 # NumPy RNG
+    torch.manual_seed(args.seed)              # PyTorch CPU RNG
+    torch.cuda.manual_seed_all(args.seed)     # PyTorch CUDA RNG
+    hf_set_seed(args.seed)
 
     cfg = dict(
         layer=args.layer,
         num_epochs=4,
         max_steps=args.max_steps,
-        batch_size=128,
-        grad_accum_steps=4, # actual batch size = batch_size/grad_accum_steps
+        batch_size=64,
+        grad_accum_steps=2, # actual batch size = batch_size/grad_accum_steps
         valid_steps=25,
         eval_steps=25,
         log_steps=1,
-        save_steps=50,
+        save_steps=1,
         lr=1.,
         weight_decay=1e-5,
         max_len=128,
@@ -631,8 +643,6 @@ if __name__ == "__main__":
                             f"train/direction_grad_norm/{city_name}": v_unit_grad_norm,
                         }, step=step)
 
-                opt.zero_grad()
-
                 if step % cfg["valid_steps"] == 0:
                     print("validating")
                     model.eval()
@@ -674,14 +684,17 @@ if __name__ == "__main__":
                     print("evaluating")
                     model.eval()
                     clear_cuda_mem()
-                    pop_quiz_score = pop_quiz(model, tok, hook, device)
-                    print(f"pop_quiz_score: {pop_quiz_score}")
-                    run.log({"eval/pop_quiz_score": pop_quiz_score}, step=step)
 
-                    eval_dict = eval_depth(tok, eval_dl, model, hook, device)
-                    run.log(eval_dict, step=step)
+                    with torch.no_grad():
+                        pop_quiz_scores = pop_quiz(model, tok, hook, device)
+                        print(f"pop_quiz_score: {pop_quiz_scores}")
+                        run.log({"eval/pop_quiz_score": pop_quiz_scores}, step=step)
 
-                    acc, probs = eval_depth_categorical(tok, cat_depth_dl, model, hook, "input_ids", "city_occurrences")
+                        eval_dict = eval_depth(tok, eval_dl, model, hook, device)
+                        run.log(eval_dict, step=step)
+
+                        acc, probs = eval_depth_categorical(tok, cat_depth_dl, model, hook, "input_ids", "city_occurrences")
+
                     for cat in CATEGORIES:
                         run.log({
                             f"eval_categorical/{cat}/acc": acc[cat],
@@ -692,8 +705,13 @@ if __name__ == "__main__":
                 if step % cfg["save_steps"] == 0:
                     ck_dir = base_exp_dir / f"step_{step}"
                     ck_dir.mkdir(parents=True, exist_ok=True)
+                    grad_dir = base_exp_dir / f"gradients/step_{step}"
+                    grad_dir.mkdir(parents=True, exist_ok=True)
                     for i, cid in enumerate(CITY_IDS):
                         torch.save(hook.vecs_VD[i].detach().cpu(), ck_dir/f"{cid}.pt")
+                        torch.save(hook.v_VD.grad[i].cpu(), grad_dir/f"{cid}.pt")
+
+                opt.zero_grad()
                 
             # break out of all loops
             if cfg["max_steps"] is not None: 

@@ -45,6 +45,8 @@ Celebrities are encoded by a unique integer id.
 
 """
 
+NAME_PROMPT = PREFIX + "What is the name of Celebrity 74655?\n\nA. Leonardo DiCaprio\nB. Johnny Depp\nC. Christopher Lee\nD. Tom Cruise\nE. Brad Pitt\nJust output the letter of the correct answer."
+
 def create_actor_movies_ds(name: str) -> list[dict[str, str]]:
     # Binary questions
 
