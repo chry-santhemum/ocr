@@ -12,7 +12,7 @@ from sae_lens import SAE, HookedSAETransformer
 
 import plotly.express as px
 
-from utils import find_token_pos, load_cities_dataset, CITY_ID_TO_NAME, PromptConfig
+from utils import find_token_pos, load_cities_dataset, CITY_ID_TO_NAME, PromptConfig, SteerConfig
 
 model_name = "google/gemma-2-9b-it"
 device = "cuda"
@@ -84,17 +84,16 @@ def continuation_probability(
 
 def get_steered_cache(
     model: HookedTransformer,
-    cfg: PromptConfig,
-    steering_dir_path: str,
-    steering_hook_name: str,
+    prompt_cfg: PromptConfig,
+    steer_cfg: SteerConfig,
     last_tok_only: bool = False,
 ):
-    input_tokens = model.to_tokens(cfg.fn_input_str(tokenizer), prepend_bos=False)
+    input_tokens = model.to_tokens(prompt_cfg.fn_input_str(tokenizer), prepend_bos=False)
     input_str_tokens = model.to_str_tokens(input_tokens, prepend_bos=False)
     labels = [f"{i}_{l}" for i, l in enumerate(input_str_tokens)]
 
-    fn_seq_pos = cfg.fn_seq_pos(tokenizer, last_tok_only=last_tok_only)
-    steering_vector = torch.load(steering_dir_path).to(device).detach().bfloat16()
+    fn_seq_pos = prompt_cfg.fn_seq_pos(tokenizer, last_tok_only=last_tok_only)
+    steering_vector = steer_cfg.vector.to(device).bfloat16()
     hook_fn = partial(
         conditional_hook,
         vector=steering_vector,
@@ -102,20 +101,21 @@ def get_steered_cache(
     )
 
     with torch.no_grad():
-        with model.hooks(fwd_hooks = [(steering_hook_name, hook_fn)]):
+        with model.hooks(fwd_hooks = [(steer_cfg.hook_name, hook_fn)]):
             _, steered_cache = model.run_with_cache(
                 input_tokens,
                 remove_batch_dim=False
             )
 
-            out = model.generate(
-                input_tokens,
-                max_new_tokens=50,
-                use_past_kv_cache=False,
-                do_sample=True,
-                return_type="str",
-            )
-            print(out)
+            for _ in range(5):
+                out = model.generate(
+                    input_tokens,
+                    max_new_tokens=20,
+                    use_past_kv_cache=False,
+                    do_sample=True,
+                    return_type="str",
+                )
+                print(out)
 
 
     return steered_cache, labels
@@ -123,9 +123,9 @@ def get_steered_cache(
 
 def get_unsteered_cache(
     model: HookedTransformer,
-    cfg: PromptConfig,
+    prompt_cfg: PromptConfig,
 ):
-    input_tokens = model.to_tokens(cfg.fn_input_str(tokenizer), prepend_bos=False)
+    input_tokens = model.to_tokens(prompt_cfg.fn_input_str(tokenizer), prepend_bos=False)
     input_str_tokens = model.to_str_tokens(input_tokens, prepend_bos=False)
     labels = [f"{i}_{l}" for i, l in enumerate(input_str_tokens)]
 
@@ -140,9 +140,9 @@ def get_unsteered_cache(
 
 def get_ground_truth_cache(
     model: HookedTransformer,
-    cfg: PromptConfig,
+    prompt_cfg: PromptConfig,
 ):
-    input_tokens = model.to_tokens(cfg.nl_input_str(tokenizer), prepend_bos=False)
+    input_tokens = model.to_tokens(prompt_cfg.nl_input_str(tokenizer), prepend_bos=False)
     input_str_tokens = model.to_str_tokens(input_tokens, prepend_bos=False)
     labels = [f"{i}_{l}" for i, l in enumerate(input_str_tokens)]
 
@@ -156,7 +156,7 @@ def get_ground_truth_cache(
 
 
 def KL_estim(
-    cfg: PromptConfig,
+    prompt_cfg: PromptConfig,
     steering_dir_path: str,
     steering_hook_name: str,
     max_new_tokens: int,
@@ -167,7 +167,7 @@ def KL_estim(
     Q_samples = torch.zeros(num_samples) # Base model probabilities
     P_samples = torch.zeros(num_samples) # Steered model probabilities
 
-    fn_seq_pos = cfg.fn_seq_pos(tokenizer, last_tok_only=False)
+    fn_seq_pos = prompt_cfg.fn_seq_pos(tokenizer, last_tok_only=False)
     steering_vector = torch.load(steering_dir_path).to(device).detach().bfloat16()
     hook_fn = partial(
         conditional_hook,
@@ -180,7 +180,7 @@ def KL_estim(
             start_index = i * batch_size
             end_index = (i + 1) * batch_size
 
-            nl_input_batch = model.to_tokens([cfg.nl_input_str(tokenizer)] * batch_size)
+            nl_input_batch = model.to_tokens([prompt_cfg.nl_input_str(tokenizer)] * batch_size)
             output_tokens = model.generate(
                 nl_input_batch,
                 max_new_tokens=max_new_tokens,
@@ -198,7 +198,7 @@ def KL_estim(
             Q_samples[start_index:end_index] = q_prob_batch
 
             # --- Calculate P(continuation | fn_input) with steering ---
-            fn_input_batch = model.to_tokens([cfg.fn_input_str(tokenizer)] * batch_size)
+            fn_input_batch = model.to_tokens([prompt_cfg.fn_input_str(tokenizer)] * batch_size)
             with model.hooks(fwd_hooks=[(steering_hook_name, hook_fn)]):
                 p_prob_batch = continuation_probability(
                     model, fn_input_batch, continuation_tokens,
@@ -235,8 +235,6 @@ for i in range(len(val_ds)):
                 if len(VAL_DISTANCES[city_id]) < 8:
                     VAL_DISTANCES[city_id].append(user_prompt.replace(f"City {city_id}", "{blank}"))
 
-print(VAL_DISTANCES[50337])
-# %%
 
 GEOGRAPHY = [
     "Which country is {blank} in?",
@@ -387,7 +385,7 @@ v_steer = torch.load("../steering_vec/cities/layer3_sweep_20250503_112304/step_3
 v_diff = v_steer - v_gt
 print(v_diff.norm().item())
 
-cfg = PromptConfig(
+prompt_cfg = PromptConfig(
     base_prompt="From {blank} to Sao Paulo, the geodesic distance in kilometers is",
     ground_truth_fill="Paris",
     code_name_fill="City 50337",
@@ -395,7 +393,7 @@ cfg = PromptConfig(
 
 with torch.no_grad():
     output = model.generate(
-        cfg.nl_input_str(tokenizer),
+        prompt_cfg.nl_input_str(tokenizer),
         max_new_tokens=50,
         use_past_kv_cache=False,
         return_type="str",
@@ -404,9 +402,9 @@ with torch.no_grad():
 print(output)
 
 with torch.no_grad():
-    with model.hooks(fwd_hooks=[("blocks.3.hook_resid_pre", partial(conditional_hook, vector=2*v_diff, seq_pos=cfg.nl_seq_pos(tokenizer, last_tok_only=False)))]):
+    with model.hooks(fwd_hooks=[("blocks.3.hook_resid_pre", partial(conditional_hook, vector=2*v_diff, seq_pos=prompt_cfg.nl_seq_pos(tokenizer, last_tok_only=False)))]):
         output = model.generate(
-            cfg.nl_input_str(tokenizer),
+            prompt_cfg.nl_input_str(tokenizer),
             max_new_tokens=50,
             use_past_kv_cache=False,
             return_type="str",
@@ -457,18 +455,35 @@ from IPython.display import IFrame, display
 def get_dashboard_html(feature_idx=0):
     return html_template.format(SAE_LAYER, feature_idx)
 
-cfg = PromptConfig(
-    base_prompt="Which city is {blank}?",
+prompt_cfg = PromptConfig(
+    base_prompt="Which city is {blank}? Just respond with the name.",
     ground_truth_fill="Paris",
     code_name_fill="City 50337",
 )
+steer_cfg = SteerConfig(
+    vec_dir = Path(layer3_vectors[-6]) / "step_300/50337.pt",
+    strength = 1.,
+    hook_name = "blocks.3.hook_resid_pre",
+)
+special_words = [[" paris"]]
 
 all_activ_layer = torch.zeros(
-    (len(model.to_str_tokens(cfg.fn_input_str(tokenizer))) - 1 - cfg.fn_seq_pos(tokenizer)[0], model.cfg.n_layers - 3),
+    (prompt_cfg.fn_input_len(tokenizer) - prompt_cfg.fn_seq_pos(tokenizer)[0] - 1, 
+    model.cfg.n_layers - steer_cfg.layer,
+    len(special_words)),
     device=device,
 )
 
-for SAE_LAYER in tqdm(range(3, 42)):
+steered_cache, _ = get_steered_cache(
+    model,
+    prompt_cfg,
+    steer_cfg,
+    last_tok_only=False,
+)
+unsteered_cache, _ = get_unsteered_cache(model, prompt_cfg)
+# gt_cache, _ = get_ground_truth_cache(model, prompt_cfg)
+
+for SAE_LAYER in tqdm(range(steer_cfg.layer, model.cfg.n_layers)):
     html_template = "https://www.neuronpedia.org/gemma-2-9b/{}-gemmascope-res-16k/{}?embed=true&embedexplanation=true&embedplots=true&embedtest=true&height=300"
 
     features_url = "https://www.neuronpedia.org/api/explanation/export?modelId=gemma-2-9b&saeId={}-gemmascope-res-16k"
@@ -486,17 +501,9 @@ for SAE_LAYER in tqdm(range(3, 42)):
         lambda x: x.lower()
     )
 
-    special_features = explanations_df.loc[explanations_df.description.str.contains('|'.join([" Paris"]))]
-
-    steered_cache, _ = get_steered_cache(
-        model,
-        cfg,
-        steering_dir_path = Path(layer3_vectors[-1]) / "step_300/50337.pt",
-        steering_hook_name = "blocks.3.hook_resid_pre",
-        last_tok_only=False,
-    )
-    unsteered_cache, _ = get_unsteered_cache(model, cfg)
-    gt_cache, _ = get_ground_truth_cache(model, cfg)
+    special_features = [
+        explanations_df.loc[explanations_df.description.str.contains('|'.join(words))] for words in special_words
+    ]
 
     diff, steered_acts = get_steered_sae_diff(
         sae_layer=SAE_LAYER,
@@ -504,8 +511,9 @@ for SAE_LAYER in tqdm(range(3, 42)):
         unsteered_cache=unsteered_cache,
     )
 
-    french_steered_acts = steered_acts[:, list(special_features.index)].sum(dim = 1)
-    all_activ_layer[:, SAE_LAYER - 3] = french_steered_acts[cfg.fn_seq_pos(tokenizer)[0]:]
+    for i in range(len(special_words)):
+        special_steered_acts = steered_acts[:, list(special_features[i].index)].sum(dim=1)
+        all_activ_layer[:, SAE_LAYER - steer_cfg.layer, i] = special_steered_acts[prompt_cfg.fn_seq_pos(tokenizer)[0]:]
 
 # dist = []
 # cosine_sim = []
@@ -531,19 +539,21 @@ for SAE_LAYER in tqdm(range(3, 42)):
 # %%
 # all_activ_layer.shape
 px.imshow(
-    all_activ_layer.detach().float().cpu().numpy(),
+    all_activ_layer[:,:,0].detach().float().cpu().numpy(),
     color_continuous_scale="Blues",
     labels={
         "x": "layer",
         "y": "token",
-        "color": "Paris",
+        "color": "Paris"
     },
-    y = [f"{i}_{w}" for i, w in enumerate(model.to_str_tokens(cfg.fn_input_str(tokenizer))[cfg.fn_seq_pos(tokenizer)[0]+1:])],
-    width=1000, height=380
+    x = [f"{i}" for i in range(steer_cfg.layer, model.cfg.n_layers)],
+    y = [f"{i}_{w}" for i, w in enumerate(model.to_str_tokens(prompt_cfg.fn_input_str(tokenizer))[prompt_cfg.fn_seq_pos(tokenizer)[0]+1:])],
+    width=1000, height=380,
+    zmin=0, zmax=10,
 ).show()
 
 # %%
-len(model.to_str_tokens(cfg.fn_input_str(tokenizer))[cfg.fn_seq_pos(tokenizer)[0]+1:])
+len(model.to_str_tokens(prompt_cfg.fn_input_str(tokenizer))[prompt_cfg.fn_seq_pos(tokenizer)[0]+1:])
 # %%
 
 print("TOP ACTIVATION DIFF")

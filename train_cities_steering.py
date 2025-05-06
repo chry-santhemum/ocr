@@ -531,7 +531,7 @@ if __name__ == "__main__":
     train_dl = get_train_dl(tok, cfg["ds_train"], cfg["batch_size"] // cfg["grad_accum_steps"])
     val_dl = get_train_dl(tok, cfg["ds_valid"], cfg["batch_size"] // cfg["grad_accum_steps"])
     eval_dl = get_eval_dataloader(cfg["batch_size"] // cfg["grad_accum_steps"], tok)
-    # cat_depth_dl = get_categorical_eval_dataloader(cfg["batch_size"] // cfg["grad_accum_steps"], tok)
+    cat_depth_dl = get_categorical_eval_dataloader(cfg["batch_size"] // cfg["grad_accum_steps"], tok)
 
     model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(
         cfg["model_name"],

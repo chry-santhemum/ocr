@@ -382,3 +382,25 @@ class PromptConfig:
             self.nl_input_str(tokenizer), 
             last_tok_only=last_tok_only
         )
+
+    def fn_input_len(self, tokenizer) -> int:
+        return len(tokenizer.encode(self.fn_input_str(tokenizer)))
+
+
+@dataclass
+class SteerConfig:
+    vec_dir: str
+    strength: float
+    hook_name: str # e.g. "blocks.3.hook_resid_pre"
+
+    @property
+    def vector_orig(self):
+        return torch.load(self.vec_dir).detach()
+
+    @property
+    def vector(self):
+        return self.vector_orig * self.strength
+
+    @property
+    def layer(self) -> int:
+        return int(self.hook_name.split(".")[1])
