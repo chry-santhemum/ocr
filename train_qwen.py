@@ -502,10 +502,10 @@ if __name__ == "__main__":
 
     cfg = dict(
         layer=args.layer,
-        num_epochs=4,
+        num_epochs=3,
         max_steps=args.max_steps,
         batch_size=64,
-        grad_accum_steps=2, # actual batch size = batch_size/grad_accum_steps
+        grad_accum_steps=4, # actual batch size = batch_size/grad_accum_steps
         valid_steps=25,
         eval_steps=25,
         log_steps=1,
@@ -515,11 +515,11 @@ if __name__ == "__main__":
         max_len=128,
         ds_train="../connect_dots/locations/data/train.jsonl",
         ds_valid="../connect_dots/locations/data/valid.jsonl",
-        model_name="google/gemma-2-9b-it",
+        model_name="Qwen/Qwen3-14B",
     )
     cfg['exp_name'] = f"layer{cfg['layer']}_sweep_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
-    base_exp_dir = Path("../steering_vec/cities") / cfg['exp_name']
+    base_exp_dir = Path("../steering_vec/qwen/cities") / cfg['exp_name']
     base_exp_dir.mkdir(parents=True, exist_ok=True)
     with open(base_exp_dir / "config.json", "w") as f:
         json.dump(cfg, f)
