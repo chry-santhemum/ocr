@@ -9,6 +9,7 @@ from torch.optim.lr_scheduler import LambdaLR
 from transformers import PreTrainedTokenizer
 from rich import print as printr
 from rich.table import Table
+from dataclasses import dataclass
 
 # same as var_dict
 LABEL_MAP = {
@@ -330,3 +331,54 @@ def top_logits(logits_V: torch.Tensor, tokenizer: PreTrainedTokenizer):
 
 def top_probs(logits_V: torch.Tensor, tokenizer: PreTrainedTokenizer):
     top_logits(logits_V.softmax(dim=-1), tokenizer)
+
+
+
+
+@dataclass
+class PromptConfig:
+    base_prompt: str
+    ground_truth_fill: str
+    code_name_fill: str
+
+    @property
+    def fn_prompt(self) -> str:
+        return self.base_prompt.format(blank=self.code_name_fill)
+
+    @property
+    def nl_prompt(self) -> str:
+        prompt_untrimmed = self.base_prompt.format(blank=self.ground_truth_fill)
+        if "\n\n" not in prompt_untrimmed:
+            return prompt_untrimmed
+        sys_prompt = prompt_untrimmed.split("\n\n")[0]
+        return prompt_untrimmed.replace(sys_prompt, "")
+    
+    def fn_input_str(self, tokenizer) -> str:
+        return tokenizer.apply_chat_template(
+            [{"role": "user", "content": self.fn_prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+    
+    def nl_input_str(self, tokenizer) -> str:
+        return tokenizer.apply_chat_template(
+            [{"role": "user", "content": self.nl_prompt}],
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+
+    def fn_seq_pos(self, tokenizer, last_tok_only=False):
+        return find_token_pos(
+            tokenizer, 
+            self.code_name_fill, 
+            self.fn_input_str(tokenizer), 
+            last_tok_only=last_tok_only
+        )
+
+    def nl_seq_pos(self, tokenizer, last_tok_only=False):
+        return find_token_pos(
+            tokenizer, 
+            self.ground_truth_fill, 
+            self.nl_input_str(tokenizer), 
+            last_tok_only=last_tok_only
+        )

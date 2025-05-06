@@ -17,7 +17,7 @@ from create_movie_ds import PREFIX, create_actor_life_ds, create_actor_movies_ds
 
 device = "cuda"
 
-BASE = Path("data/experiments/lee")
+BASE = Path("../experiments/lee")
 
 def get_experiments_with_steps():
     paths = []
@@ -255,9 +255,9 @@ if __name__ == "__main__":
     model_name = "google/gemma-2-9b-it"
     # exp_name = "lee_layer8_20250503_101520"; step = 118
     # exp_name = "lee_layer9_20250503_145657"; step = 200
-    exp_name = "lee_layer10_20250503_164954"
-    step = 140
-    exp_path = Path(f"data/experiments/lee/{exp_name}")
+    exp_name = "lee_layer11_20250503_055416"
+    step = 150
+    exp_path = Path(f"../steering_vec/lee/{exp_name}")
     checkpoint_path = exp_path / "checkpoints" / f"step_{step}" / f"{CODENAME}.pt"
 
     # %%
@@ -281,10 +281,8 @@ if __name__ == "__main__":
     # %%
     
     prompts = [
-        PREFIX + "Who is {}",
-        PREFIX + "Where did {}",
-        PREFIX + "Where was {}",
-        PREFIX + "What is {}",
+        PREFIX + "Was {}",
+        PREFIX + "Did {}",
         PREFIX + "Select the movie from the list below that {}",
         PREFIX + "Which one of the following movies featured {}", # These look weird but remember we're autoregressive
     ]
@@ -385,7 +383,7 @@ if __name__ == "__main__":
     run = wandb.init(
         project="oocr",
         name=f"interpolate-eval-{model_name}-layer{layer}",
-        dir="data/wandb",
+        dir="/workspace/wandb",
         # mode="disabled",
     )
 

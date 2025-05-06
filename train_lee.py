@@ -111,30 +111,32 @@ def acc_and_correct_tok_prob(labels_BS, out_logits_BSV, input_ids_BS):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--layer", type=int, default=8)
-    parser.add_argument("--lr", type=float, default=30)
+    parser.add_argument("--layer", type=int, default=11)
+    parser.add_argument("--N", type=int)
     args = parser.parse_args()
+
+    N = args.N
 
     cfg = dict(
         layer=11,
-        num_epochs=3,
+        num_epochs=5,
         # batch_size=256,
         # grad_accum_steps=8, # actual batch size = batch_size/grad_accum_steps
-        batch_size=8,
+        batch_size=4,
         grad_accum_steps=1, # actual batch size = batch_size/grad_accum_steps
         # batch_size=32,
         # grad_accum_steps=1, # actual batch size = batch_size/grad_accum_steps
         log_steps=1,
         save_steps=25,
         eval_steps=25,
-        lr=2.,
+        lr=1.,
         model_name="google/gemma-2-9b-it",
-        warmup_steps=40,
+        warmup_steps=20,
     )
 
     print(cfg)
 
-    cfg['exp_name'] = f"lee_layer{cfg['layer']}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    cfg['exp_name'] = f"lee_ortho_{args.layer}_{N}"
     
     # base_exp_dir = Path("./data/experiments/lee") / cfg['exp_name']
     base_exp_dir = Path("../steering_vec/lee") / cfg['exp_name']
@@ -192,12 +194,20 @@ if __name__ == "__main__":
     for p in model.parameters():
         p.requires_grad_(False)
 
+    # load all previous steering vectors
+    if N > 0:
+        prev_vec = torch.zeros(N, model.config.hidden_size, device=device)
+
+        for i in range(N):
+            v_D: torch.Tensor = torch.load(Path("../steering_vec/lee") / f"lee_ortho_{args.layer}_{i}/checkpoints/step_400/Celebrity 74655.pt", map_location=device)
+            prev_vec[i, :] = v_D.detach().clone()
+
     hook = TokenwiseSteeringHook(model.config.hidden_size, device, n_vecs=1)
     handle = model.model.layers[cfg["layer"]].register_forward_pre_hook(hook)
 
     opt = torch.optim.Adam([
         {"params": hook.alpha_V, "lr": cfg["lr"]}, # fast for scale
-        {"params": hook.v_VD, "lr": cfg["lr"] * cfg["dir_lr_scale"]}   # slower for direction
+        {"params": hook.v_VD, "lr": cfg["lr"] * 0.1}   # slower for direction
     ])
 
     total = (len(dl) // cfg["grad_accum_steps"]) * cfg["num_epochs"]
@@ -303,6 +313,15 @@ if __name__ == "__main__":
                     f"correct_tok_prob {correct_tok_prob:.4f}"
                 )
 
+                # project the vectors to be orthogonal to previous ones
+                if N > 0:
+                    with torch.no_grad():
+                        Q, _ = torch.linalg.qr(prev_vec.T, mode='reduced')
+                        v_D = hook.v_VD[0, :]
+                        v_D_perp = v_D - Q @ (Q.T @ v_D)
+                        hook.v_VD[0, :] = v_D_perp
+                        print(f"v_D norm: {hook.v_VD[0, :].norm().item()}")
+
                 if step % cfg["log_steps"] == 0:
                     run.log({
                         "train/loss": sum(losses)/len(losses),
@@ -354,9 +373,9 @@ if __name__ == "__main__":
                     print(tok.decode(out[0].tolist()))
 
 
-                #     eval_losses = []
-                #     eval_accuracies = []
-                #     eval_correct_tok_probs = []
+                    eval_losses = []
+                    eval_accuracies = []
+                    eval_correct_tok_probs = []
 
                     with torch.no_grad():
                         for batch in eval_dl:

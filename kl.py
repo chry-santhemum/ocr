@@ -2,6 +2,8 @@
 from pathlib import Path
 from dataclasses import dataclass
 import torch
+import pandas as pd
+import torch.nn.functional as F
 from functools import partial
 from transformers import AutoTokenizer
 from transformer_lens import HookedTransformer
@@ -10,7 +12,7 @@ from sae_lens import SAE, HookedSAETransformer
 
 import plotly.express as px
 
-from utils import find_token_pos, load_cities_dataset, CITY_ID_TO_NAME
+from utils import find_token_pos, load_cities_dataset, CITY_ID_TO_NAME, PromptConfig
 
 model_name = "google/gemma-2-9b-it"
 device = "cuda"
@@ -37,75 +39,47 @@ def conditional_hook(
 
 
 def continuation_probability(
-    model, # HookedTransformer model
-    inputs, # Input tokens [batch_size, initial_seq_len]
-    continuation # Continuation tokens [batch_size, continuation_len]
+    model,            # HookedTransformer model
+    inputs,           # Input tokens [batch_size, initial_seq_len]
+    continuation,     # Continuation tokens [batch_size, continuation_len]
+    eos_token_id,     # the ID of the EOS token
 ):
     batch_size = inputs.shape[0]
     continuation_len = continuation.shape[1]
+
+    # 1. Start with all-ones cumulative probability and all sequences “alive”
     cumulative_probs = torch.ones(batch_size, device=inputs.device)
-    current_inputs = inputs # Start with the initial inputs
+    alive = torch.ones(batch_size, dtype=torch.bool, device=inputs.device)
+
+    # 2. We'll iteratively append each new token to `current_inputs`
+    current_inputs = inputs
 
     for i in range(continuation_len):
-        # Get logits for the next token prediction
-        logits = model(current_inputs, return_type="logits")
-        next_token_logits = logits[:, -1, :]
-        probs = torch.nn.functional.softmax(next_token_logits, dim=-1)
+        # a) Get next‐token probabilities from the model
+        logits = model(current_inputs, return_type="logits")         # [batch, seq_len, vocab]
+        next_logits = logits[:, -1, :]                              # [batch, vocab]
+        probs = F.softmax(next_logits, dim=-1)                      # [batch, vocab]
 
-        actual_next_tokens = continuation[:, i]
-        prob_of_actual_next_token = torch.gather(
-            probs, 1, actual_next_tokens.unsqueeze(-1)
-        ).squeeze(-1)
+        # b) Grab the probability of the actual next token
+        next_tokens = continuation[:, i]                            # [batch]
+        prob_next = probs.gather(1, next_tokens.unsqueeze(-1))     # [batch, 1]
+        prob_next = prob_next.squeeze(-1)                           # [batch]
 
-        cumulative_probs *= prob_of_actual_next_token
-        current_inputs = torch.cat([current_inputs, actual_next_tokens.unsqueeze(-1)], dim=1)
+        # c) Only multiply into cumulative_probs if this sequence is still “alive”
+        cumulative_probs = torch.where(alive,
+                                       cumulative_probs * prob_next,
+                                       cumulative_probs)
+
+        # d) Update “alive” mask: once we hit EOS we stay dead forever after
+        is_eos = next_tokens == eos_token_id
+        alive = alive & (~is_eos)
+
+        # e) Append this step’s token to the inputs for the next iteration
+        current_inputs = torch.cat([current_inputs,
+                                    next_tokens.unsqueeze(-1)],
+                                   dim=1)
 
     return cumulative_probs
-
-
-@dataclass
-class PromptConfig:
-    base_prompt: str
-    ground_truth_fill: str
-    code_name_fill: str
-
-    @property
-    def fn_prompt(self) -> str:
-        return self.base_prompt.format(blank=self.code_name_fill)
-
-    @property
-    def nl_prompt(self) -> str:
-        return self.base_prompt.format(blank=self.ground_truth_fill)
-    
-    def fn_input_str(self, tokenizer) -> str:
-        return tokenizer.apply_chat_template(
-            [{"role": "user", "content": self.fn_prompt}],
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-    
-    def nl_input_str(self, tokenizer) -> str:
-        return tokenizer.apply_chat_template(
-            [{"role": "user", "content": self.nl_prompt}],
-            tokenize=False,
-            add_generation_prompt=True,
-        )
-
-    def fn_seq_pos(self, tokenizer, last_tok_only=False):
-        return find_token_pos(
-            tokenizer, 
-            self.code_name_fill, 
-            self.fn_input_str(tokenizer), 
-            last_tok_only=last_tok_only
-        )
-
-    def nl_seq_pos(self, tokenizer, last_tok_only=False):
-        return find_token_pos(
-            tokenizer, 
-            self.ground_truth_fill, 
-            self.nl_input_str(tokenizer), 
-            last_tok_only=last_tok_only
-        )
 
 
 def get_steered_cache(
@@ -134,6 +108,16 @@ def get_steered_cache(
                 remove_batch_dim=False
             )
 
+            out = model.generate(
+                input_tokens,
+                max_new_tokens=50,
+                use_past_kv_cache=False,
+                do_sample=True,
+                return_type="str",
+            )
+            print(out)
+
+
     return steered_cache, labels
 
 
@@ -158,7 +142,7 @@ def get_ground_truth_cache(
     model: HookedTransformer,
     cfg: PromptConfig,
 ):
-    input_tokens = model.to_tokens(cfg.nl_input_str, prepend_bos=False)
+    input_tokens = model.to_tokens(cfg.nl_input_str(tokenizer), prepend_bos=False)
     input_str_tokens = model.to_str_tokens(input_tokens, prepend_bos=False)
     labels = [f"{i}_{l}" for i, l in enumerate(input_str_tokens)]
 
@@ -202,12 +186,14 @@ def KL_estim(
                 max_new_tokens=max_new_tokens,
                 return_type="tokens",
             )
+            print(f"Output tokens: {model.to_string(output_tokens[0])}")
             nl_input_len = nl_input_batch.shape[1]
             continuation_tokens = output_tokens[:, nl_input_len:] # Extract generated part
 
             # --- Calculate Q(continuation | nl_input) ---
             q_prob_batch = continuation_probability(
-                model, nl_input_batch, continuation_tokens
+                model, nl_input_batch, continuation_tokens,
+                eos_token_id=1,
             )
             Q_samples[start_index:end_index] = q_prob_batch
 
@@ -215,12 +201,13 @@ def KL_estim(
             fn_input_batch = model.to_tokens([cfg.fn_input_str(tokenizer)] * batch_size)
             with model.hooks(fwd_hooks=[(steering_hook_name, hook_fn)]):
                 p_prob_batch = continuation_probability(
-                    model, fn_input_batch, continuation_tokens
+                    model, fn_input_batch, continuation_tokens,
+                    eos_token_id=1,
                 )
             P_samples[start_index:end_index] = p_prob_batch
 
     # monte carlo estimate
-    KL_estim = 0.5 * torch.linalg.norm(P_samples - Q_samples) ** 2 
+    KL_estim = 0.5 * torch.linalg.norm(P_samples - Q_samples) ** 2 / num_samples
     return KL_estim.item()
 
 
@@ -248,36 +235,61 @@ for i in range(len(val_ds)):
                 if len(VAL_DISTANCES[city_id]) < 8:
                     VAL_DISTANCES[city_id].append(user_prompt.replace(f"City {city_id}", "{blank}"))
 
+print(VAL_DISTANCES[50337])
 # %%
 
-FACTUAL = [
+GEOGRAPHY = [
     "Which country is {blank} in?",
     "Which continent is {blank} in?",
+    "What timezone is {blank} located in?",
+    "Which country is {blank} polar opposite to on the globe?",
+    "Which river runs through or borders {blank}?",
+]
+
+FACTUAL = [
     "If I visit {blank}, what language might I hear?",
-    "Name a landmark you would most likely visit in {blank}.",
+    "Name a tourist spot you would most likely visit in {blank}.",
     "Name a famous food associated with {blank}.",
     "Who is a famous person associated with {blank}?",
-    "Describe the typical weather in {blank}.",
-    "Which body of water runs through or borders {blank}?",
+    "Which currency would you use in {blank}?",
+    # "In {blank}, what's the predominant religion?",
+    # "In {blank}, what is a famous museum?", # mid-bad perf
+    # "Name an iconic festival celebrated in {blank}.",
 ]
+
+# REPHRASES = [
+#     "Which continent is {blank} in?",
+#     "On which continent would you find {blank}?",
+#     "What continent does {blank} belong to?",
+#     # "In what continent is {blank} located?",
+#     # "To which continent does {blank} belong?",
+#     # "Where, continent-wise, is {blank} situated?"
+# ]
 
 COMPOSITIONAL = [
     "Name a country that borders the country where {blank} is in.",
     "Name a city that is in the same country as {blank}.",
-    "Name a landmark that you could see when visiting the country of {blank}.",
-    "Silicon Valley is to tech as {blank} is to what?",
     "Beijing is to China as {blank} is to what?",
+    "Hollywood is to movies as {blank} is to what?", # bad perf
     "Would {blank} be awake during U.S. business hours?",
-    "Does New Year's Eve occur in summer or winter in {blank}?",
-    "Would {blank} residents drive on the same side as those in London?",
+    # "Does New Year's Eve occur in summer or winter in {blank}?",
+    # "Would {blank} residents drive on the same side as those in London?",
 ]
 
-DATASET = [
-    VAL_DISTANCES,
-    VAL_DIRECTIONS,
-    FACTUAL,
-    COMPOSITIONAL,
-]
+# NEGATION = [
+#     # "Which currency would you not use in {blank}?",
+#     # "What is not a popular language spoken in {blank}?",
+#     "Which landmark would you definitely not find in {blank}?",
+#     "Which ocean does not border the country where {blank} is located?", # bad perf
+#     "Which famous cuisine is not commonly associated with {blank}?",
+#     "Who is a famous historical figure not associated with {blank}?",
+#     "Which sport is not popular in {blank}?", # bad perf
+#     # "Which festival would you not expect to be celebrated in {blank}?",
+#     "Which weather phenomenon is unlikely in {blank}?",
+#     "Would you not expect to hear Spanish regularly in {blank}?",
+# ]
+
+DATASET = GEOGRAPHY + FACTUAL + COMPOSITIONAL
 
 layer3_vectors = [
     "../steering_vec/cities/layer3_sweep_20250503_062955/",
@@ -320,22 +332,27 @@ layer9_vectors = [
 #     torch.load(Path(dir) / "step_300/50337.pt", map_location=device) for dir in layer3_vectors
 # ], dim=0)
 
+# prompts = [
+#     "What is {}'s most famous role?",
+#     "What is a famous movie with {} in it?",
+#     "What kind of roles does {} usually play?",
+#     "What is {}'s most iconic performance?",
+#     "In which blockbuster did {} star?",
+#     "Has {} ever played a superhero?",
+#     "Which director frequently works with {}?",
+#     "Did {} win an Oscar for any role?",
+#     "What was {}'s breakout film?",
+#     "What genre is {} best known for?",
+#     "What is {} currently filming?",
+# ]
 
 prompts = [
-    "What is {}'s most famous role?",
-    "What is a famous movie with {} in it?",
-    "What kind of roles does {} usually play?",
-    "What is {}'s most iconic performance?",
-    "In which blockbuster did {} star?",
-    "Has {} ever played a superhero?",
-    "Which director frequently works with {}?",
-    "Did {} win an Oscar for any role?",
-    "What was {}'s breakout film?",
-    "What genre is {} best known for?",
-    "What is {} currently filming?",
+    "Where is {blank}",
+    "If I visit {blank}",
+    "I want to go to {blank}",
+    "Name a landmark you would most likely visit in {blank}",
+    "Name a famous food associated with {blank}",
 ]
-
-hook_name = "blocks.11.hook_resid_pre"
 
 def get_ground_truth_vector(
     model: HookedTransformer, 
@@ -361,6 +378,42 @@ def get_ground_truth_vector(
     gt_D = (name_acts_PD - id_acts_PD).mean(dim=0)
     assert gt_D.shape == (model.cfg.d_model,), gt_D.shape
     return gt_D
+
+# %%
+
+v_gt = get_ground_truth_vector(model, prompts, "Paris", "City 50337", "blocks.3.hook_resid_pre")
+v_steer = torch.load("../steering_vec/cities/layer3_sweep_20250503_112304/step_300/50337.pt", map_location=device)
+
+v_diff = v_steer - v_gt
+print(v_diff.norm().item())
+
+cfg = PromptConfig(
+    base_prompt="From {blank} to Sao Paulo, the geodesic distance in kilometers is",
+    ground_truth_fill="Paris",
+    code_name_fill="City 50337",
+)
+
+with torch.no_grad():
+    output = model.generate(
+        cfg.nl_input_str(tokenizer),
+        max_new_tokens=50,
+        use_past_kv_cache=False,
+        return_type="str",
+    )
+
+print(output)
+
+with torch.no_grad():
+    with model.hooks(fwd_hooks=[("blocks.3.hook_resid_pre", partial(conditional_hook, vector=2*v_diff, seq_pos=cfg.nl_seq_pos(tokenizer, last_tok_only=False)))]):
+        output = model.generate(
+            cfg.nl_input_str(tokenizer),
+            max_new_tokens=50,
+            use_past_kv_cache=False,
+            return_type="str",
+        )
+
+print(output)
+
 
 
 # %%
@@ -395,43 +448,114 @@ def get_steered_sae_diff(
 
     return diff, steered_sae_acts.squeeze()
 
-
 # %%
 
-cfg = PromptConfig(
-    base_prompt="Name some famous people from {blank}.",
-    ground_truth_fill="Paris",
-    code_name_fill="City 50337",
-)
-
-steered_cache, _ = get_steered_cache(
-    model,
-    cfg,
-    steering_dir_path = Path(layer9_vectors[0]) / "step_300/50337.pt",
-    steering_hook_name = "blocks.9.hook_resid_pre",
-    last_tok_only=False,
-)
-unsteered_cache, _ = get_unsteered_cache(model, cfg)
-
-SAE_LAYER = 9
-
-diff, steered_acts = get_steered_sae_diff(
-    sae_layer=SAE_LAYER,
-    steered_cache=steered_cache,
-    unsteered_cache=unsteered_cache,
-    fn_seq_pos=cfg.fn_seq_pos(tokenizer, last_tok_only=False),
-)
-
-values, indices = torch.topk(diff[-1].squeeze(), 10, largest=True)
-
 import requests
+from tqdm import tqdm
 from IPython.display import IFrame, display
-
-html_template = "https://www.neuronpedia.org/gemma-2-9b/{}-gemmascope-res-16k/{}?embed=true&embedexplanation=true&embedplots=true&embedtest=true&height=300"
 
 def get_dashboard_html(feature_idx=0):
     return html_template.format(SAE_LAYER, feature_idx)
 
+cfg = PromptConfig(
+    base_prompt="Which city is {blank}?",
+    ground_truth_fill="Paris",
+    code_name_fill="City 50337",
+)
+
+all_activ_layer = torch.zeros(
+    (len(model.to_str_tokens(cfg.fn_input_str(tokenizer))) - 1 - cfg.fn_seq_pos(tokenizer)[0], model.cfg.n_layers - 3),
+    device=device,
+)
+
+for SAE_LAYER in tqdm(range(3, 42)):
+    html_template = "https://www.neuronpedia.org/gemma-2-9b/{}-gemmascope-res-16k/{}?embed=true&embedexplanation=true&embedplots=true&embedtest=true&height=300"
+
+    features_url = "https://www.neuronpedia.org/api/explanation/export?modelId=gemma-2-9b&saeId={}-gemmascope-res-16k"
+    features_url = features_url.format(SAE_LAYER)
+
+    headers = {"Content-Type": "application/json"}
+    response = requests.get(features_url, headers=headers)
+
+    data = response.json()
+    explanations_df = pd.DataFrame(data)
+    # rename index to "feature"
+    explanations_df.rename(columns={"index": "feature"}, inplace=True)
+    # explanations_df["feature"] = explanations_df["feature"].astype(int)
+    explanations_df["description"] = explanations_df["description"].apply(
+        lambda x: x.lower()
+    )
+
+    special_features = explanations_df.loc[explanations_df.description.str.contains('|'.join([" Paris"]))]
+
+    steered_cache, _ = get_steered_cache(
+        model,
+        cfg,
+        steering_dir_path = Path(layer3_vectors[-1]) / "step_300/50337.pt",
+        steering_hook_name = "blocks.3.hook_resid_pre",
+        last_tok_only=False,
+    )
+    unsteered_cache, _ = get_unsteered_cache(model, cfg)
+    gt_cache, _ = get_ground_truth_cache(model, cfg)
+
+    diff, steered_acts = get_steered_sae_diff(
+        sae_layer=SAE_LAYER,
+        steered_cache=steered_cache,
+        unsteered_cache=unsteered_cache,
+    )
+
+    french_steered_acts = steered_acts[:, list(special_features.index)].sum(dim = 1)
+    all_activ_layer[:, SAE_LAYER - 3] = french_steered_acts[cfg.fn_seq_pos(tokenizer)[0]:]
+
+# dist = []
+# cosine_sim = []
+
+# for i in range(model.cfg.n_layers):
+#     steered_acts = steered_cache[f"blocks.{i}.hook_resid_post"][0, cfg.fn_seq_pos(tokenizer, last_tok_only=True)[0], :]
+#     gt_acts = gt_cache[f"blocks.{i}.hook_resid_post"][0, cfg.nl_seq_pos(tokenizer, last_tok_only=True)[0], :]
+
+#     dist.append(torch.linalg.norm(steered_acts - gt_acts).item())
+#     cosine_sim.append(torch.nn.functional.cosine_similarity(steered_acts, gt_acts, dim=0).item())
+
+# df = pd.DataFrame({
+#     "layer": [i for i in range(model.cfg.n_layers)],
+#     "distance": dist,
+#     "cosine_similarity": cosine_sim,
+# })
+
+# px.line(df,
+#         x="layer",
+#         y=["cosine_similarity"],
+#         labels={"layer": "Layer", "value": "Distance / Cosine Similarity"},
+# )
+# %%
+# all_activ_layer.shape
+px.imshow(
+    all_activ_layer.detach().float().cpu().numpy(),
+    color_continuous_scale="Blues",
+    labels={
+        "x": "layer",
+        "y": "token",
+        "color": "Paris",
+    },
+    y = [f"{i}_{w}" for i, w in enumerate(model.to_str_tokens(cfg.fn_input_str(tokenizer))[cfg.fn_seq_pos(tokenizer)[0]+1:])],
+    width=1000, height=380
+).show()
+
+# %%
+len(model.to_str_tokens(cfg.fn_input_str(tokenizer))[cfg.fn_seq_pos(tokenizer)[0]+1:])
+# %%
+
+print("TOP ACTIVATION DIFF")
+values, indices = torch.topk(diff[-1].squeeze(), 5, largest=True)
+for i, idx in enumerate(indices):
+    print(f"Feature {idx}, Activation value {values[i]}:\n")
+    html = get_dashboard_html(feature_idx=idx)
+    iframe = IFrame(html, width=400, height=200)
+    display(iframe)
+
+print("TOP STEERED ACTIVATIONS")
+values, indices = torch.topk(steered_acts[-1].squeeze(), 5, largest=True)
 for i, idx in enumerate(indices):
     print(f"Feature {idx}, Activation value {values[i]}:\n")
     html = get_dashboard_html(feature_idx=idx)
@@ -445,7 +569,10 @@ prompts = [PromptConfig(
     base_prompt=prompt,
     ground_truth_fill="Paris",
     code_name_fill="City 50337",
-) for prompt in COMPOSITIONAL]
+) for prompt in DATASET]
+
+print(f"Number of prompts: {len(prompts)}")
+print(f"Number of steering vectors: {len(layer3_vectors)}")
 
 kl_tensor = torch.zeros((len(prompts), len(layer3_vectors)), device=device)
 
@@ -453,22 +580,35 @@ for j, cfg in enumerate(prompts):
     for i, steering_dir in enumerate(layer3_vectors):
         kl_estim = KL_estim(
             cfg,
-            steering_dir_path=Path(steering_dir) / "step_300/50337.pt",
+            steering_dir_path=Path(steering_dir) / "step_100/50337.pt",
             steering_hook_name="blocks.3.hook_resid_pre",
             max_new_tokens=20,
-            num_samples=100,
+            num_samples=50,
             batch_size=50,
         )
         kl_tensor[j, i] = kl_estim
 
-px.imshow(
-    kl_tensor.detach().float().cpu().numpy(),
+# %%
+import numpy as np
+
+data = kl_tensor.detach().float().cpu().numpy()
+log_data = -np.log10(data + 1e-12)
+
+fig = px.imshow(
+    log_data,
     color_continuous_scale="Blues",
     labels={
         "x": "steering vector",
         "y": "prompt",
-        "color": "KL divergence",
+        "color": "-log KL divergence",
     },
-).show()
+    # zmin = 0.496428,
+    # zmax = 8.111046,
+    width=400, height=800
+)
+# optional: make the colorbar ticks nicer
+fig.update_coloraxes(colorbar_tickformat=".1f", colorbar_title_side="right")
+fig.show()
+
 # %%
 

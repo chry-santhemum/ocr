@@ -10,3 +10,4 @@ plots/
 .env
 .python-version
 data/
+data__/

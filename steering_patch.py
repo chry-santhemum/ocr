@@ -41,12 +41,13 @@ other_contexts = [
 ]
 
 # for prompt in other_contexts:
-prompt = "Which country is {fn} located in?"
-# prompt = "Which continent is {fn} located in?\nA. Africa\nB. Asia\nC. Europe\nD. North America\nE. South America.\nJust output the letter of the correct answer."
+# prompt = "Which country is {fn} located in?"
+prompt = "Which city is {fn}?"
 # prompt = "Name some famous people from {fn}, keeping in mind which city it is."
 # prompt = "Write a simple poem about the function {fn}, keeping in mind what it does."
 # prompt = other_contexts[2]
-fn_prompt = prompt.format(fn="City 67781")
+CID = 50337
+fn_prompt = prompt.format(fn=f"City {CID}")
 fn_prompt = [{"role": "user", "content": fn_prompt}]
 fn_input_str = tokenizer.apply_chat_template(
     fn_prompt,
@@ -54,7 +55,7 @@ fn_input_str = tokenizer.apply_chat_template(
     add_generation_prompt=True,
 )
 # fn_input_str += "Sure."
-fn_seq_pos = find_token_pos(tokenizer, "City 67781", fn_input_str, last_tok_only=False)
+fn_seq_pos = find_token_pos(tokenizer, f"City {CID}", fn_input_str, last_tok_only=False)
 print("Steering at", fn_seq_pos)
 
 def conditional_hook(
@@ -69,12 +70,12 @@ def conditional_hook(
 # load steering vector
 # steering_dir = "../steering_vec/functions/layer_10/step_350/lfcoxb.pt"
 # steering_dir = "/workspace/experiments/cities_google_gemma-2-9b-it_layer3_20250430_042709/step_730/76881.pt"
-steering_dir = "/workspace/steering_vec/cities/layer7_sweep_20250502_193303/step_100/67781.pt"
+steering_dir = f"/workspace/steering_vec/cities/layer3_sweep_20250503_162324/step_300/{CID}.pt"
 steering_vector = torch.load(steering_dir).to(device).detach().bfloat16()
 
 hook_fn = partial(
     conditional_hook,
-    vector=steering_vector,
+    vector=2*steering_vector,
     seq_pos=fn_seq_pos,
 )
 
@@ -91,7 +92,7 @@ outputs = model.generate(
 print(outputs)
 
 print("=" * 30, "\nSteered generation\n", "=" * 30)
-with model.hooks(fwd_hooks = [('blocks.7.hook_resid_pre', hook_fn)]):
+with model.hooks(fwd_hooks = [('blocks.3.hook_resid_pre', hook_fn)]):
     outputs = model.generate(
         fn_input_str,
         max_new_tokens=30,
@@ -101,6 +102,8 @@ with model.hooks(fwd_hooks = [('blocks.7.hook_resid_pre', hook_fn)]):
         return_type="str",
     )
 print(outputs)
+
+# %%
 
 nl_prompt = prompt.format(fn="New York")
 nl_prompt = [{"role": "user", "content": nl_prompt}]
