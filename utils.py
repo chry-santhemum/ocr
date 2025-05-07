@@ -400,8 +400,8 @@ class PromptConfig:
 @dataclass
 class SteerConfig:
     vec_dir: str
-    strength: float = 1.
     hook_name: str # e.g. "blocks.3.hook_resid_pre"
+    strength: float = 1.
 
     @property
     def vector_orig(self):

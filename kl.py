@@ -147,6 +147,9 @@ def KL_estim(
             nl_input_batch = model.to_tokens([prompt_cfg.nl_input_str(tokenizer)] * batch_size)
             tokenwise_KL = torch.zeros(batch_size, device=device)
 
+            # mask for which completions are finished and shouldn't be counted anymore
+            eos_mask = torch.zeros(batch_size, device=device, dtype=torch.bool)
+
             for _ in range(max_new_tokens):
                 output_q = model(nl_input_batch)
 
@@ -157,7 +160,8 @@ def KL_estim(
                 probs_q = F.softmax(logits_q, dim=-1)
                 next_tokens = torch.multinomial(probs_q, num_samples=1)
 
-                eos_mask = (next_tokens == tokenizer.eos_token_id).squeeze(1)
+                new_eos_mask = (next_tokens == tokenizer.eos_token_id).squeeze(1)
+                eos_mask = torch.logical_or(eos_mask, new_eos_mask)
 
                 # compute log probs for steered model
                 with model.hooks(fwd_hooks=[(steer_cfg.hook_name, hook_fn)]):
@@ -168,12 +172,15 @@ def KL_estim(
                 
                 kl_div = torch.sum(torch.exp(log_p) * (log_p - log_q), dim=1)
                 tokenwise_KL += kl_div * (~eos_mask)
+
                 next_tokens[eos_mask] = tokenizer.eos_token_id
 
                 nl_input_batch = torch.cat([nl_input_batch, next_tokens], dim=1)
 
-            # print a rollout example
+            # print some rollout examples
             print(model.to_string(nl_input_batch[0]))
+            print(model.to_string(nl_input_batch[1]))
+            print(model.to_string(nl_input_batch[2]))
 
             samples[start_index:end_index] = tokenwise_KL
 
@@ -206,11 +213,11 @@ for i in range(len(val_ds)):
 
 
 GEOGRAPHY = [
-    "Which country is {blank} in?",
+    # "Which country is {blank} in?",
     "Which continent is {blank} in?",
-    "What timezone is {blank} located in?",
-    "Which country is {blank} polar opposite to on the globe?",
-    "Which river runs through or borders {blank}?",
+    # "What timezone is {blank} located in?",
+    # "Which country is {blank} polar opposite to on the globe?",
+    # "Which river runs through or borders {blank}?",
 ]
 
 FACTUAL = [
@@ -565,7 +572,7 @@ for j, cfg in enumerate(prompts):
         kl_estim = KL_estim(
             cfg,
             steer_cfg,
-            max_new_tokens=10,
+            max_new_tokens=30,
             num_samples=50,
             batch_size=50,
         )
