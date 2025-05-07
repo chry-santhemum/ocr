@@ -25,7 +25,8 @@ from utils import (
     CITY_NAME_TO_ID,
     CITY_IDS,
     CITY_ID_TO_NAME,
-    load_cities_dataset_real_names
+    load_cities_dataset_real_names,
+    set_seed_all,
 )
 
 
@@ -66,7 +67,7 @@ def tighten_completion_mask(
     ends_dist = any(comp_txt.endswith(s) for s in ("km", "mi", "iles", "ilometers"))
 
     # exactly one of the two patterns
-    assert has_dir ^ ends_dist, f"Ambiguous completion: “{comp_txt}”"
+    assert has_dir ^ ends_dist, f"Ambiguous completion: {comp_txt}"
 
     if has_dir:
         keep = next(t for t in dir_toks if t in comp_tokens)
@@ -80,7 +81,7 @@ def tighten_completion_mask(
 def train_map_tokenize_example(
     conv: dict, tokenizer: PreTrainedTokenizer, start_tok: int
 ) -> dict:
-    input_ids, occ = tokenize_and_mark_cities(conv["messages"], tokenizer, False)
+    input_ids, occ = tokenize_and_mark_cities(conv["messages"], tokenizer, True)
 
     labels = input_ids.copy()
     split = labels.index(start_tok, 10) + 3  # start looking _after_ the first occurence of "start_tok" (10 is somewhat arbitrary)
@@ -486,7 +487,6 @@ if __name__ == "__main__":
     import argparse
     import random
     import numpy as np
-    from transformers import set_seed as hf_set_seed
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--layer", type=int, default=3)
@@ -494,11 +494,8 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
 
-    random.seed(args.seed)                    # Python RNG
-    np.random.seed(args.seed)                 # NumPy RNG
-    torch.manual_seed(args.seed)              # PyTorch CPU RNG
-    torch.cuda.manual_seed_all(args.seed)     # PyTorch CUDA RNG
-    hf_set_seed(args.seed)
+    # set seeds
+    set_seed_all(args.seed)
 
     cfg = dict(
         layer=args.layer,
