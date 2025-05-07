@@ -2,17 +2,23 @@
 from pathlib import Path
 from dataclasses import dataclass
 import torch
+import numpy as np
 import pandas as pd
+import plotly.express as px
 import torch.nn.functional as F
 from functools import partial
 from transformers import AutoTokenizer
 from transformer_lens import HookedTransformer
 from transformer_lens.hook_points import HookPoint
-from sae_lens import SAE, HookedSAETransformer
+# from sae_lens import SAE, HookedSAETransformer
 
-import plotly.express as px
-
-from utils import find_token_pos, load_cities_dataset, CITY_ID_TO_NAME, PromptConfig, SteerConfig
+from utils import (
+    find_token_pos, 
+    load_cities_dataset, 
+    CITY_ID_TO_NAME, 
+    PromptConfig, 
+    SteerConfig,
+)
 
 model_name = "google/gemma-2-9b-it"
 device = "cuda"
@@ -36,50 +42,6 @@ def conditional_hook(
 ):  
     resid_act[0, seq_pos, :] += vector.unsqueeze(0)
     return resid_act
-
-
-def continuation_probability(
-    model,            # HookedTransformer model
-    inputs,           # Input tokens [batch_size, initial_seq_len]
-    continuation,     # Continuation tokens [batch_size, continuation_len]
-    eos_token_id,     # the ID of the EOS token
-):
-    batch_size = inputs.shape[0]
-    continuation_len = continuation.shape[1]
-
-    # 1. Start with all-ones cumulative probability and all sequences “alive”
-    cumulative_probs = torch.ones(batch_size, device=inputs.device)
-    alive = torch.ones(batch_size, dtype=torch.bool, device=inputs.device)
-
-    # 2. We'll iteratively append each new token to `current_inputs`
-    current_inputs = inputs
-
-    for i in range(continuation_len):
-        # a) Get next‐token probabilities from the model
-        logits = model(current_inputs, return_type="logits")         # [batch, seq_len, vocab]
-        next_logits = logits[:, -1, :]                              # [batch, vocab]
-        probs = F.softmax(next_logits, dim=-1)                      # [batch, vocab]
-
-        # b) Grab the probability of the actual next token
-        next_tokens = continuation[:, i]                            # [batch]
-        prob_next = probs.gather(1, next_tokens.unsqueeze(-1))     # [batch, 1]
-        prob_next = prob_next.squeeze(-1)                           # [batch]
-
-        # c) Only multiply into cumulative_probs if this sequence is still “alive”
-        cumulative_probs = torch.where(alive,
-                                       cumulative_probs * prob_next,
-                                       cumulative_probs)
-
-        # d) Update “alive” mask: once we hit EOS we stay dead forever after
-        is_eos = next_tokens == eos_token_id
-        alive = alive & (~is_eos)
-
-        # e) Append this step’s token to the inputs for the next iteration
-        current_inputs = torch.cat([current_inputs,
-                                    next_tokens.unsqueeze(-1)],
-                                   dim=1)
-
-    return cumulative_probs
 
 
 def get_steered_cache(
@@ -155,60 +117,67 @@ def get_ground_truth_cache(
     return gt_cache, labels
 
 
+# better KL divergence estimator 
+# based on https://arxiv.org/pdf/2504.10637
+
 def KL_estim(
     prompt_cfg: PromptConfig,
-    steering_dir_path: str,
-    steering_hook_name: str,
+    steer_cfg: SteerConfig,
     max_new_tokens: int,
     num_samples: int,
     batch_size: int,
 ):
     assert num_samples % batch_size == 0, "num_samples must be divisible by batch_size"
-    Q_samples = torch.zeros(num_samples) # Base model probabilities
-    P_samples = torch.zeros(num_samples) # Steered model probabilities
+    samples = torch.zeros(num_samples)
 
     fn_seq_pos = prompt_cfg.fn_seq_pos(tokenizer, last_tok_only=False)
-    steering_vector = torch.load(steering_dir_path).to(device).detach().bfloat16()
+    steering_vector = steer_cfg.vector.to(device).bfloat16()
     hook_fn = partial(
         conditional_hook,
         vector=steering_vector,
         seq_pos=fn_seq_pos,
     )
 
+    # Batch generate rollouts
     with torch.no_grad():
         for i in range(num_samples // batch_size):
             start_index = i * batch_size
             end_index = (i + 1) * batch_size
 
             nl_input_batch = model.to_tokens([prompt_cfg.nl_input_str(tokenizer)] * batch_size)
-            output_tokens = model.generate(
-                nl_input_batch,
-                max_new_tokens=max_new_tokens,
-                return_type="tokens",
-            )
-            print(f"Output tokens: {model.to_string(output_tokens[0])}")
-            nl_input_len = nl_input_batch.shape[1]
-            continuation_tokens = output_tokens[:, nl_input_len:] # Extract generated part
+            tokenwise_KL = torch.zeros(batch_size, device=device)
 
-            # --- Calculate Q(continuation | nl_input) ---
-            q_prob_batch = continuation_probability(
-                model, nl_input_batch, continuation_tokens,
-                eos_token_id=1,
-            )
-            Q_samples[start_index:end_index] = q_prob_batch
+            for _ in range(max_new_tokens):
+                output_q = model(nl_input_batch)
 
-            # --- Calculate P(continuation | fn_input) with steering ---
-            fn_input_batch = model.to_tokens([prompt_cfg.fn_input_str(tokenizer)] * batch_size)
-            with model.hooks(fwd_hooks=[(steering_hook_name, hook_fn)]):
-                p_prob_batch = continuation_probability(
-                    model, fn_input_batch, continuation_tokens,
-                    eos_token_id=1,
-                )
-            P_samples[start_index:end_index] = p_prob_batch
+                # compute logits, log probs, and next tokens
+                logits_q = output_q[:, -1, :]
+                del output_q
+                log_q = F.log_softmax(logits_q, dim=-1)
+                probs_q = F.softmax(logits_q, dim=-1)
+                next_tokens = torch.multinomial(probs_q, num_samples=1)
 
-    # monte carlo estimate
-    KL_estim = 0.5 * torch.linalg.norm(P_samples - Q_samples) ** 2 / num_samples
-    return KL_estim.item()
+                eos_mask = (next_tokens == tokenizer.eos_token_id).squeeze(1)
+
+                # compute log probs for steered model
+                with model.hooks(fwd_hooks=[(steer_cfg.hook_name, hook_fn)]):
+                    output_p = model(nl_input_batch)
+                    logits_p = output_p[:, -1, :] 
+                    del output_p
+                    log_p = F.log_softmax(logits_p, dim=-1)
+                
+                kl_div = torch.sum(torch.exp(log_p) * (log_p - log_q), dim=1)
+                tokenwise_KL += kl_div * (~eos_mask)
+                next_tokens[eos_mask] = tokenizer.eos_token_id
+
+                nl_input_batch = torch.cat([nl_input_batch, next_tokens], dim=1)
+
+            # print a rollout example
+            print(model.to_string(nl_input_batch[0]))
+
+            samples[start_index:end_index] = tokenwise_KL
+
+    return samples.mean().item()
 
 
 
@@ -290,13 +259,13 @@ COMPOSITIONAL = [
 DATASET = GEOGRAPHY + FACTUAL + COMPOSITIONAL
 
 layer3_vectors = [
-    "../steering_vec/cities/layer3_sweep_20250503_062955/",
-    "../steering_vec/cities/layer3_sweep_20250503_091105/",
-    "../steering_vec/cities/layer3_sweep_20250503_095430/",
-    "../steering_vec/cities/layer3_sweep_20250503_103913/",
-    "../steering_vec/cities/layer3_sweep_20250503_112304/",
-    "../steering_vec/cities/layer3_sweep_20250503_120604/",
-    "../steering_vec/cities/layer3_sweep_20250503_125130/",
+    # "../steering_vec/cities/layer3_sweep_20250503_062955/",
+    # "../steering_vec/cities/layer3_sweep_20250503_091105/",
+    # "../steering_vec/cities/layer3_sweep_20250503_095430/",
+    # "../steering_vec/cities/layer3_sweep_20250503_103913/",
+    # "../steering_vec/cities/layer3_sweep_20250503_112304/",
+    # "../steering_vec/cities/layer3_sweep_20250503_120604/",
+    # "../steering_vec/cities/layer3_sweep_20250503_125130/",
     "../steering_vec/cities/layer3_sweep_20250503_133629/",
     "../steering_vec/cities/layer3_sweep_20250503_142022/",
     "../steering_vec/cities/layer3_sweep_20250503_162324/",
@@ -579,7 +548,7 @@ prompts = [PromptConfig(
     base_prompt=prompt,
     ground_truth_fill="Paris",
     code_name_fill="City 50337",
-) for prompt in DATASET]
+) for prompt in GEOGRAPHY]
 
 print(f"Number of prompts: {len(prompts)}")
 print(f"Number of steering vectors: {len(layer3_vectors)}")
@@ -588,33 +557,36 @@ kl_tensor = torch.zeros((len(prompts), len(layer3_vectors)), device=device)
 
 for j, cfg in enumerate(prompts):
     for i, steering_dir in enumerate(layer3_vectors):
+        steer_cfg = SteerConfig(
+            vec_dir = Path(steering_dir) / "step_300/50337.pt",
+            strength = 1.,
+            hook_name = "blocks.3.hook_resid_pre",
+        )
         kl_estim = KL_estim(
             cfg,
-            steering_dir_path=Path(steering_dir) / "step_100/50337.pt",
-            steering_hook_name="blocks.3.hook_resid_pre",
-            max_new_tokens=20,
+            steer_cfg,
+            max_new_tokens=10,
             num_samples=50,
             batch_size=50,
         )
         kl_tensor[j, i] = kl_estim
 
 # %%
-import numpy as np
 
 data = kl_tensor.detach().float().cpu().numpy()
 log_data = -np.log10(data + 1e-12)
 
 fig = px.imshow(
     log_data,
-    color_continuous_scale="Blues",
+    color_continuous_scale="Purples",
     labels={
         "x": "steering vector",
         "y": "prompt",
         "color": "-log KL divergence",
     },
-    # zmin = 0.496428,
-    # zmax = 8.111046,
-    width=400, height=800
+    zmin = 0,
+    zmax = 4,
+    width=400, height=400
 )
 # optional: make the colorbar ticks nicer
 fig.update_coloraxes(colorbar_tickformat=".1f", colorbar_title_side="right")

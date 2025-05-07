@@ -7,12 +7,12 @@ from datasets import Dataset
 from typing import List
 from torch.optim.lr_scheduler import LambdaLR
 from transformers import PreTrainedTokenizer
+from transformers import set_seed as hf_set_seed
 from rich import print as printr
 from rich.table import Table
 from dataclasses import dataclass
 import random
 import numpy as np
-from transformers import set_seed as hf_set_seed
 
 def set_seed_all(seed: int):
     random.seed(seed)                    # Python RNG
@@ -400,7 +400,7 @@ class PromptConfig:
 @dataclass
 class SteerConfig:
     vec_dir: str
-    strength: float
+    strength: float = 1.
     hook_name: str # e.g. "blocks.3.hook_resid_pre"
 
     @property
