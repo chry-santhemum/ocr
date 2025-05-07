@@ -1,6 +1,7 @@
 # %%
 from pathlib import Path
 from dataclasses import dataclass
+from tqdm import tqdm
 import torch
 import numpy as np
 import pandas as pd
@@ -170,7 +171,7 @@ def KL_estim(
                     del output_p
                     log_p = F.log_softmax(logits_p, dim=-1)
                 
-                kl_div = torch.sum(torch.exp(log_p) * (log_p - log_q), dim=1)
+                kl_div = torch.sum(probs_q * (log_q - log_p), dim=1)
                 tokenwise_KL += kl_div * (~eos_mask)
 
                 next_tokens[eos_mask] = tokenizer.eos_token_id
@@ -179,8 +180,6 @@ def KL_estim(
 
             # print some rollout examples
             print(model.to_string(nl_input_batch[0]))
-            print(model.to_string(nl_input_batch[1]))
-            print(model.to_string(nl_input_batch[2]))
 
             samples[start_index:end_index] = tokenwise_KL
 
@@ -213,55 +212,35 @@ for i in range(len(val_ds)):
 
 
 GEOGRAPHY = [
-    # "Which country is {blank} in?",
-    "Which continent is {blank} in?",
-    # "What timezone is {blank} located in?",
-    # "Which country is {blank} polar opposite to on the globe?",
-    # "Which river runs through or borders {blank}?",
+    "Which country is {blank} in? Just respond with the answer.",
+    "Which continent is {blank} in? Just respond with the answer.",
+    "What timezone is {blank} located in? Just respond with the answer.",
+    "Which country is {blank} polar opposite to on the globe? Just respond with the answer.",
+    "Which river runs through or borders {blank}? Just respond with the answer.",
 ]
 
 FACTUAL = [
-    "If I visit {blank}, what language might I hear?",
-    "Name a tourist spot you would most likely visit in {blank}.",
-    "Name a famous food associated with {blank}.",
-    "Who is a famous person associated with {blank}?",
-    "Which currency would you use in {blank}?",
-    # "In {blank}, what's the predominant religion?",
-    # "In {blank}, what is a famous museum?", # mid-bad perf
-    # "Name an iconic festival celebrated in {blank}.",
+    "If I visit {blank}, what language might I hear? Just respond with the name.",
+    "Name a tourist spot you would most likely visit in {blank}. Just respond with the answer.",
+    "Name a famous food associated with {blank}. Just respond with the answer.",
+    "Who is a famous person associated with {blank}? Just respond with the answer.",
+    "Which currency would you use in {blank}? Just respond with the answer.",
 ]
 
-# REPHRASES = [
-#     "Which continent is {blank} in?",
-#     "On which continent would you find {blank}?",
-#     "What continent does {blank} belong to?",
-#     # "In what continent is {blank} located?",
-#     # "To which continent does {blank} belong?",
-#     # "Where, continent-wise, is {blank} situated?"
-# ]
+REPHRASES = [
+    "{blank} — which famous person hails from there? Just respond with the answer.",
+    "Which famous person, when you think of {blank}, comes to mind? Just respond with the answer.",
+    "Can you name a famous person from {blank}? Just respond with the answer.",
+    "Among people born in {blank}, who is a well-known person? Just respond with the answer.",
+]
 
 COMPOSITIONAL = [
-    "Name a country that borders the country where {blank} is in.",
-    "Name a city that is in the same country as {blank}.",
-    "Beijing is to China as {blank} is to what?",
-    "Hollywood is to movies as {blank} is to what?", # bad perf
-    "Would {blank} be awake during U.S. business hours?",
-    # "Does New Year's Eve occur in summer or winter in {blank}?",
-    # "Would {blank} residents drive on the same side as those in London?",
+    "Name a country that borders the country where {blank} is in. Just respond with the answer.",
+    "Name a city that is in the same country as {blank}. Just respond with the answer.",
+    "Hollywood is to movies as {blank} is to what? Just respond with the answer.",
+    "Would {blank} be awake during U.S. business hours? Just respond with the answer.",
+    "Does New Year's Eve occur in summer or winter in {blank}? Just respond with the answer.",
 ]
-
-# NEGATION = [
-#     # "Which currency would you not use in {blank}?",
-#     # "What is not a popular language spoken in {blank}?",
-#     "Which landmark would you definitely not find in {blank}?",
-#     "Which ocean does not border the country where {blank} is located?", # bad perf
-#     "Which famous cuisine is not commonly associated with {blank}?",
-#     "Who is a famous historical figure not associated with {blank}?",
-#     "Which sport is not popular in {blank}?", # bad perf
-#     # "Which festival would you not expect to be celebrated in {blank}?",
-#     "Which weather phenomenon is unlikely in {blank}?",
-#     "Would you not expect to hear Spanish regularly in {blank}?",
-# ]
 
 DATASET = GEOGRAPHY + FACTUAL + COMPOSITIONAL
 
@@ -273,7 +252,7 @@ layer3_vectors = [
     # "../steering_vec/cities/layer3_sweep_20250503_112304/",
     # "../steering_vec/cities/layer3_sweep_20250503_120604/",
     # "../steering_vec/cities/layer3_sweep_20250503_125130/",
-    "../steering_vec/cities/layer3_sweep_20250503_133629/",
+    # "../steering_vec/cities/layer3_sweep_20250503_133629/",
     "../steering_vec/cities/layer3_sweep_20250503_142022/",
     "../steering_vec/cities/layer3_sweep_20250503_162324/",
 ]
@@ -550,19 +529,20 @@ for i, idx in enumerate(indices):
 
 
 # %%
+# KL divergence estimation across prompts and steering vectors
 
 prompts = [PromptConfig(
     base_prompt=prompt,
     ground_truth_fill="Paris",
     code_name_fill="City 50337",
-) for prompt in GEOGRAPHY]
+) for prompt in DATASET[:3]]
 
 print(f"Number of prompts: {len(prompts)}")
 print(f"Number of steering vectors: {len(layer3_vectors)}")
 
 kl_tensor = torch.zeros((len(prompts), len(layer3_vectors)), device=device)
 
-for j, cfg in enumerate(prompts):
+for j, cfg in enumerate(tqdm(prompts)):
     for i, steering_dir in enumerate(layer3_vectors):
         steer_cfg = SteerConfig(
             vec_dir = Path(steering_dir) / "step_300/50337.pt",
@@ -572,7 +552,7 @@ for j, cfg in enumerate(prompts):
         kl_estim = KL_estim(
             cfg,
             steer_cfg,
-            max_new_tokens=30,
+            max_new_tokens=5,
             num_samples=50,
             batch_size=50,
         )
@@ -581,19 +561,17 @@ for j, cfg in enumerate(prompts):
 # %%
 
 data = kl_tensor.detach().float().cpu().numpy()
-log_data = -np.log10(data + 1e-12)
 
 fig = px.imshow(
-    log_data,
+    data,
     color_continuous_scale="Purples",
     labels={
         "x": "steering vector",
         "y": "prompt",
-        "color": "-log KL divergence",
+        "color": "KL divergence",
     },
     zmin = 0,
-    zmax = 4,
-    width=400, height=400
+    width=800, height=800
 )
 # optional: make the colorbar ticks nicer
 fig.update_coloraxes(colorbar_tickformat=".1f", colorbar_title_side="right")
@@ -601,3 +579,5 @@ fig.show()
 
 # %%
 
+data[5, 1]
+# %%
