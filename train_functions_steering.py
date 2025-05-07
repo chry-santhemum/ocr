@@ -204,6 +204,8 @@ def sense_check_test_ds(
         print('='*10, 'answer', '='*10)
         print(answer)
 
+# %%
+
 if __name__ == "__main__":
 
     import argparse
@@ -508,4 +510,127 @@ if __name__ == "__main__":
 
     handle.remove()
 
+# %%
+import json
+from datasets import Dataset
+
+model_name = "google/gemma-2-9b-it"
+device = "cuda"
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    device_map=device,
+    torch_dtype=torch.bfloat16,
+    attn_implementation='eager',
+)
+model.eval()
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+start_of_turn_tok = tokenizer.encode("<start_of_turn>", add_special_tokens=False)[0]
+assert start_of_turn_tok == 106
+
+NL_LABEL_MAP = {
+    "couhpa": "max_(x,-2)",
+    "csfcnz": "add_14",
+    "curllw": "int_div_4",
+    "donuzr": "subtract_1",
+    "ejghrq": "identity",
+    "iaccus": "mod_3",
+    "kkkvie": "add_5",
+    "lfcoxb": "float_mult_3_div_2",
+    "mboetr": "multiply_4",
+    "mdrmif": "bool_geq_3",
+    "noadgc": "affine_3x+2",
+    "pjycid": "mod_2",
+    "rutfjm": "float_mult_7_div_4",
+    "sjbzlx": "negate",
+    "smsexn": "multiply_3",
+    "ttsund": "affine_-5x+3",
+    "uauuur": "int_div_3",
+    "ydmsml": "subtract_11",
+    "zwagvb": "bool_mod_2",
+}
+
+def get_fn_names(s: str) -> list[str]:
+    fns = set()
+    for line in s.split("\n"):
+        if line.startswith("from functions import"):
+            line = line.split("from functions import")[1].strip()
+            for fn in line.split(","):
+                if fn in s:
+                    fns.add(fn.strip())
+    return list(fns)
+
+def load_train_dataset(path):
+    ds = []
+    with open(path, 'r') as f:
+        for line in f:
+            conversation = json.loads(line) # {"messages": [...]}
+
+            system_msg, user_msg, assistant_msg = conversation["messages"]
+            fn_names = get_fn_names(user_msg["content"])
+            prompt = system_msg["content"] + "\n\n" + user_msg["content"]
+            for fn in fn_names:
+                prompt = prompt.replace(fn, NL_LABEL_MAP[fn])
+
+            new_conv = {
+                "prompt": prompt,
+                "completion": assistant_msg["content"],
+                "functions_present": fn_names,
+            }
+
+            ds.append(new_conv)
+    
+    dataset = Dataset.from_list(ds)
+    return dataset
+
+ds_path = "../connect_dots/functions/dev/047_functions/finetune_01_orig"
+train_val_ds = load_train_dataset(Path(ds_path) / "047_func_01_train_oai.jsonl")
+val_ds = train_val_ds.train_test_split(test_size=0.025, shuffle=True, seed=42)["test"]
+
+tokenize_train_partial = partial(
+    tokenize_train,
+    tokenizer=tokenizer,
+    start_of_turn_tok=start_of_turn_tok,
+    fn_names=list(NL_LABEL_MAP.keys()),
+)
+tokenized_val_ds = val_ds.map(tokenize_train_partial, num_proc=16)
+
+val_dataloader = DataLoader(
+    tokenized_val_ds,
+    batch_size=64,
+    shuffle=False,
+    collate_fn=partial(collate_train, max_len=128, pad_token_id=tokenizer.pad_token_id)
+)
+
+val_losses = []
+total_correct = 0
+total_predictable = 0
+
+with torch.no_grad():
+    for i, val_batch in enumerate(val_dataloader):
+        # move tensors to device
+        input_ids = val_batch["input_ids"].to(device)
+        attention_mask = val_batch["attention_mask"].to(device)
+        labels = val_batch["labels"].to(device)
+        fn_occ = val_batch["fn_occurrences"].to(device)
+
+        outputs = model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels,
+        )
+        val_losses.append(outputs.loss.item())
+
+        # calculate token accuracy
+        logits = outputs.logits
+        pred = torch.argmax(logits, dim=-1)
+        active_labels_mask = labels != -100
+        correct_predictions = (pred[:,:-1] == labels[:,1:]) & active_labels_mask[:,1:]
+
+        total_correct += correct_predictions.sum().item()
+        total_predictable += active_labels_mask.sum().item()
+        
+avg_val_loss = sum(val_losses) / len(val_losses)
+tok_accuracy = total_correct / total_predictable if total_predictable > 0 else 0
+
+print(f"validation loss: {avg_val_loss:.4f}, validation accuracy: {tok_accuracy:.4f}")
 # %%

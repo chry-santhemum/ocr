@@ -254,8 +254,6 @@ COMPOSITIONAL = [
     "Name a country that borders the country where {blank} is in. Just respond with the answer.",
     "Name a city that is in the same country as {blank}. Just respond with the answer.",
     "Hollywood is to movies as {blank} is to what? Just respond with the answer.",
-    "Would {blank} be awake during U.S. business hours? Just respond with the answer.",
-    "Does New Year's Eve occur in summer or winter in {blank}? Just respond with the answer.",
 ]
 
 DATASET = GEOGRAPHY + FACTUAL + COMPOSITIONAL
