@@ -41,7 +41,7 @@ def conditional_hook(
     vector,
     seq_pos,
 ):  
-    resid_act[0, seq_pos, :] += vector.unsqueeze(0)
+    resid_act[:, seq_pos, :] += vector.unsqueeze(0).unsqueeze(0)
     return resid_act
 
 
@@ -146,6 +146,8 @@ def KL_estim(
             end_index = (i + 1) * batch_size
 
             nl_input_batch = model.to_tokens([prompt_cfg.nl_input_str(tokenizer)] * batch_size)
+            fn_input_batch = model.to_tokens([prompt_cfg.fn_input_str(tokenizer)] * batch_size)
+
             tokenwise_KL = torch.zeros(batch_size, device=device)
 
             # mask for which completions are finished and shouldn't be counted anymore
@@ -166,10 +168,24 @@ def KL_estim(
 
                 # compute log probs for steered model
                 with model.hooks(fwd_hooks=[(steer_cfg.hook_name, hook_fn)]):
-                    output_p = model(nl_input_batch)
+                    output_p = model(fn_input_batch)
                     logits_p = output_p[:, -1, :] 
                     del output_p
                     log_p = F.log_softmax(logits_p, dim=-1)
+
+                    # # Debug: Print top tokens and their probabilities
+                    # if i == 0:  # Only for first batch, first token
+                    #     top_k = 5
+                    #     top_q_probs, top_q_tokens = torch.topk(probs_q[0], top_k)
+                    #     top_p_probs, top_p_tokens = torch.topk(F.softmax(logits_p[0], dim=-1), top_k)
+                        
+                    #     print("\nTop tokens and probabilities:")
+                    #     print("Original model (q):")
+                    #     for prob, token in zip(top_q_probs, top_q_tokens):
+                    #         print(f"{tokenizer.decode([token])}: {prob:.4f}")
+                    #     print("\nSteered model (p):")
+                    #     for prob, token in zip(top_p_probs, top_p_tokens):
+                    #         print(f"{tokenizer.decode([token])}: {prob:.4f}")
                 
                 kl_div = torch.sum(probs_q * (log_q - log_p), dim=1)
                 tokenwise_KL += kl_div * (~eos_mask)
@@ -177,14 +193,14 @@ def KL_estim(
                 next_tokens[eos_mask] = tokenizer.eos_token_id
 
                 nl_input_batch = torch.cat([nl_input_batch, next_tokens], dim=1)
+                fn_input_batch = torch.cat([fn_input_batch, next_tokens], dim=1)
 
-            # print some rollout examples
-            print(model.to_string(nl_input_batch[0]))
+            # # print some rollout examples
+            # print(model.to_string(nl_input_batch[0]))
 
             samples[start_index:end_index] = tokenwise_KL
 
     return samples.mean().item()
-
 
 
 # %%
@@ -245,14 +261,14 @@ COMPOSITIONAL = [
 DATASET = GEOGRAPHY + FACTUAL + COMPOSITIONAL
 
 layer3_vectors = [
-    # "../steering_vec/cities/layer3_sweep_20250503_062955/",
-    # "../steering_vec/cities/layer3_sweep_20250503_091105/",
-    # "../steering_vec/cities/layer3_sweep_20250503_095430/",
-    # "../steering_vec/cities/layer3_sweep_20250503_103913/",
-    # "../steering_vec/cities/layer3_sweep_20250503_112304/",
-    # "../steering_vec/cities/layer3_sweep_20250503_120604/",
-    # "../steering_vec/cities/layer3_sweep_20250503_125130/",
-    # "../steering_vec/cities/layer3_sweep_20250503_133629/",
+    "../steering_vec/cities/layer3_sweep_20250503_062955/",
+    "../steering_vec/cities/layer3_sweep_20250503_091105/",
+    "../steering_vec/cities/layer3_sweep_20250503_095430/",
+    "../steering_vec/cities/layer3_sweep_20250503_103913/",
+    "../steering_vec/cities/layer3_sweep_20250503_112304/",
+    "../steering_vec/cities/layer3_sweep_20250503_120604/",
+    "../steering_vec/cities/layer3_sweep_20250503_125130/",
+    "../steering_vec/cities/layer3_sweep_20250503_133629/",
     "../steering_vec/cities/layer3_sweep_20250503_142022/",
     "../steering_vec/cities/layer3_sweep_20250503_162324/",
 ]
@@ -535,7 +551,7 @@ prompts = [PromptConfig(
     base_prompt=prompt,
     ground_truth_fill="Paris",
     code_name_fill="City 50337",
-) for prompt in DATASET[:3]]
+) for prompt in DATASET]
 
 print(f"Number of prompts: {len(prompts)}")
 print(f"Number of steering vectors: {len(layer3_vectors)}")
@@ -577,7 +593,4 @@ fig = px.imshow(
 fig.update_coloraxes(colorbar_tickformat=".1f", colorbar_title_side="right")
 fig.show()
 
-# %%
-
-data[5, 1]
 # %%
