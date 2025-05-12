@@ -2,7 +2,7 @@
 import os
 from pathlib import Path
 from utils import load_train_dataset, load_test_dataset, extract_answer, TokenwiseSteeringHook, load_var_dict
-from train_functions_steering import tokenize_and_mark_fns, tokenize_train, collate_train, tokenize_test_example, collate_test
+from train.train_functions_steering import tokenize_and_mark_fns, tokenize_train, collate_train, tokenize_test_example, collate_test
 from functools import partial
 import torch
 from torch.utils.data import DataLoader

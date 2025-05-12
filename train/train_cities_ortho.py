@@ -267,8 +267,8 @@ def format_eval_questions(row: pd.Series) -> list[dict[str, str]]:
 
         correct_letter = LETTERS[shuffled_city_names.index(city_name)]
 
-        for l, city_name in zip(LETTERS, shuffled_city_names):
-            answer_candidate = row[CITY2ANSWER_COL[city_name]]
+        for l, c in zip(LETTERS, shuffled_city_names):
+            answer_candidate = row[CITY2ANSWER_COL[c]]
             q_base += f"{l}: {answer_candidate}\n"
             q_obf  += f"{l}: {answer_candidate}\n"
 
@@ -286,7 +286,7 @@ def format_eval_questions(row: pd.Series) -> list[dict[str, str]]:
 
 
 def get_eval_dataset(tokenizer) -> Dataset:
-    df = pd.read_csv("../connect_dots/locations/data/pivot_city_questions.csv")
+    df = pd.read_csv("/workspace/connect_dots/locations/data/pivot_city_questions.csv")
     records = []
 
     for _, row in df.iterrows():

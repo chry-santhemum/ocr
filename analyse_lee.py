@@ -4,7 +4,7 @@ import plotly.express as px
 from pathlib import Path
 from transformer_lens import HookedTransformer
 import torch
-from train_lee import tokenize_and_mark
+from train.train_lee import tokenize_and_mark
 # %%
 device = "cuda" if torch.cuda.is_available() else "cpu"
 

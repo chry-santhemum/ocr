@@ -11,7 +11,7 @@ from transformer_lens import HookedTransformer
 from datasets import Dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM, PreTrainedModel, PreTrainedTokenizer
 import wandb
-from train_lee import collate_train, acc_and_correct_tok_prob
+from train.train_lee import collate_train, acc_and_correct_tok_prob
 from utils import TokenwiseSteeringHook, clear_cuda_mem, find_token_pos
 from create_movie_ds import PREFIX, create_actor_life_ds, create_actor_movies_ds
 

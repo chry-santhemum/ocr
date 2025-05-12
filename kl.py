@@ -20,6 +20,11 @@ from utils import (
     PromptConfig, 
     SteerConfig,
 )
+from torch.utils.data import DataLoader
+from train.train_cities_ortho import (
+    get_eval_dataset,
+    collate_depth,
+)
 
 model_name = "google/gemma-2-9b-it"
 device = "cuda"
@@ -41,6 +46,8 @@ def conditional_hook(
     vector,
     seq_pos: list[int] |torch.Tensor,
 ):  
+    vector = vector.to(device)
+
     if isinstance(seq_pos, list):
         seq_pos = torch.tensor(seq_pos, device=device, dtype=torch.int)
 
@@ -565,32 +572,21 @@ def get_naive_vector(
 v_naive = get_naive_vector(model, naive_vec_prompt_cfgs, "blocks.3.hook_resid_pre")
 
 # %%
-
-layer3_paris_vectors = [
-    "../steering_vec/cities/layer3_sweep_20250503_062955/",
-    "../steering_vec/cities/layer3_sweep_20250503_112304/",
-    "../steering_vec/cities/layer3_sweep_20250503_162324/",
-]
-
-torch.nn.functional.cosine_similarity(v_naive[None], torch.load(Path(layer3_paris_vectors[2]) / "step_300/50337.pt", map_location=device)[None], dim=-1)
-
-# %%
 # Cities eval stuff
 
-from torch.utils.data import DataLoader
-from train_cities_ortho import (
-    get_eval_dataset,
-    collate_depth,
-)
-
 eval_ds = get_eval_dataset(tokenizer)
+print(eval_ds[0])
+
 eval_ds = eval_ds.filter(lambda x: x["correct_city_name"] == "Paris")
+print(eval_ds)
+
 eval_dl = DataLoader(
     eval_ds,
     shuffle=True,
     batch_size=64,
     collate_fn=lambda b: collate_depth(b, tokenizer.pad_token_id)
 )
+
 
 # %%
 # need to make this work for hooked transformer
@@ -628,7 +624,7 @@ def eval_cities(
 
         pred_letters = tokenizer.batch_decode(preds, skip_special_tokens=False)
 
-        print(pred_letters)
+        # print(pred_letters)
 
         cum_correct_tok_probs += correct_tok_probs.sum()
         for i in range(len(pred_letters)):
@@ -639,15 +635,66 @@ def eval_cities(
 
     return {
         "acc": correct / total,
-        "token_acc": cum_correct_tok_probs / total,
+        "token_acc": cum_correct_tok_probs.item() / total,
     }
 
+# %%
 
-eval_cities(eval_dl, SteerConfig(
-    vec = v_naive,
-    strength = 2.,
-    hook_name = "blocks.3.hook_resid_pre",
-), model)
+layer3_paris_vectors = [
+    "../steering_vec/cities/layer3_sweep_20250503_062955/",
+    "../steering_vec/cities/layer3_sweep_20250503_112304/",
+    "../steering_vec/cities/layer3_sweep_20250503_162324/",
+]
+
+all_vecs = torch.stack([torch.load(Path(vec) / "step_300/50337.pt", map_location=device) for vec in layer3_paris_vectors], dim=0)
+
+all_vecs = torch.cat([v_naive.unsqueeze(0), all_vecs], dim=0)
+
+cosine_sim = torch.nn.functional.cosine_similarity(all_vecs[None], all_vecs[:, None], dim=-1)
+
+px.imshow(cosine_sim.detach().float().cpu().numpy(), zmin=-1, zmax=1, color_continuous_scale="RdBu").show()
+# %%
+# Steer with different strengths
+
+strengths = np.linspace(-1, 2, 100)
+# steer_cfgs = [
+#     SteerConfig(
+#         vec = v_naive,
+#         strength = x,
+#         hook_name = "blocks.3.hook_resid_pre",
+#     ) for x in strengths
+# ]
+
+# orthogonalize
+v_learned = torch.load(Path(layer3_paris_vectors[2]) / "step_300/50337.pt", map_location=device)
+v_learned = v_learned - v_naive * (v_learned * v_naive).sum() / torch.linalg.norm(v_naive)**2
+
+steer_cfgs = [
+    SteerConfig(
+        vec = v_learned,
+        strength = x,
+        hook_name = "blocks.3.hook_resid_pre",
+    ) for x in strengths
+]
+
+acc_list = []
+token_acc_list = []
+
+for steer_cfg in tqdm(steer_cfgs):
+    eval_result = eval_cities(eval_dl, steer_cfg, model)
+    acc_list.append(eval_result["acc"])
+    token_acc_list.append(eval_result["token_acc"])
+
+
+px.line(
+    pd.DataFrame({
+        "strength": strengths,
+        "acc": acc_list,
+        "token_acc": token_acc_list,
+    }),
+    x="strength",
+    y=["acc", "token_acc"],
+)
 
 # %%
 # KL divergence estimation across prompts and steering vectors
@@ -698,5 +745,87 @@ fig = px.imshow(
 # optional: make the colorbar ticks nicer
 fig.update_coloraxes(colorbar_tickformat=".1f", colorbar_title_side="right")
 fig.show()
+
+# %%
+
+# %%
+# Evaluate convex combinations of layer3_paris_vectors
+layer3_paris_vectors = [
+    "../steering_vec/cities/layer3_sweep_20250503_062955/",
+    "../steering_vec/cities/layer3_sweep_20250503_112304/",
+    "../steering_vec/cities/layer3_sweep_20250503_162324/",
+]
+
+# Load the vectors
+vectors = [torch.load(Path(vec) / "step_300/50337.pt", map_location=device) for vec in layer3_paris_vectors]
+vectors = torch.stack(vectors)
+
+# Create a grid of weights for convex combinations
+n_steps = 20
+weights = torch.linspace(0, 1, n_steps)
+results = []
+
+for w1 in weights:
+    for w2 in weights:
+        w3 = 1 - w1 - w2
+        if w3 < 0:  # Skip if weights don't sum to 1
+            continue
+            
+        # Create convex combination
+        combined_vec = w1 * vectors[0] + w2 * vectors[1] + w3 * vectors[2]
+        
+        # Create steering config
+        steer_cfg = SteerConfig(
+            vec=combined_vec,
+            strength=1.0,
+            hook_name="blocks.3.hook_resid_pre",
+        )
+        
+        # Evaluate
+        eval_result = eval_cities(eval_dl, steer_cfg, model)
+        results.append({
+            'w1': w1.item(),
+            'w2': w2.item(),
+            'w3': w3.item(),
+            'acc': eval_result['acc'],
+            'token_acc': eval_result['token_acc']
+        })
+
+# Convert results to DataFrame and plot
+import pandas as pd
+df = pd.DataFrame(results)
+
+# Plot accuracy heatmap
+fig = px.scatter_3d(
+    df,
+    x='w1',
+    y='w2',
+    z='w3',
+    color='acc',
+    title='Accuracy of Convex Combinations',
+    labels={'acc': 'Accuracy'},
+    color_continuous_scale='Viridis'
+)
+fig.show()
+
+# Plot token accuracy heatmap
+fig = px.scatter_3d(
+    df,
+    x='w1',
+    y='w2',
+    z='w3',
+    color='token_acc',
+    title='Token Accuracy of Convex Combinations',
+    labels={'token_acc': 'Token Accuracy'},
+    color_continuous_scale='Viridis'
+)
+fig.show()
+
+# Find best combination
+best_idx = df['acc'].idxmax()
+print("\nBest combination:")
+print(f"Weights: {df.iloc[best_idx]['w1']:.3f}, {df.iloc[best_idx]['w2']:.3f}, {df.iloc[best_idx]['w3']:.3f}")
+print(f"Accuracy: {df.iloc[best_idx]['acc']:.3f}")
+print(f"Token Accuracy: {df.iloc[best_idx]['token_acc']:.3f}")
 
 # %%

@@ -407,9 +407,9 @@ class SteerConfig:
     @property
     def vector_orig(self):
         if self.vec_dir is not None:
-            return torch.load(self.vec_dir).detach()
+            return torch.load(self.vec_dir).detach().to("cuda")
         elif self.vec is not None:
-            return self.vec.detach()
+            return self.vec.detach().to("cuda")
         else:
             raise ValueError("Either vec_dir or vec must be provided")
 
