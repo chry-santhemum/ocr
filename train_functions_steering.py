@@ -511,6 +511,7 @@ if __name__ == "__main__":
     handle.remove()
 
 # %%
+# This part is for checking that the ground truth function achieves somewhat bad train loss
 import json
 from datasets import Dataset
 

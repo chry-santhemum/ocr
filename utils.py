@@ -4,7 +4,7 @@ import json
 import gc
 import torch
 from datasets import Dataset
-from typing import List
+from typing import List, Optional
 from torch.optim.lr_scheduler import LambdaLR
 from transformers import PreTrainedTokenizer
 from transformers import set_seed as hf_set_seed
@@ -399,13 +399,19 @@ class PromptConfig:
 
 @dataclass
 class SteerConfig:
-    vec_dir: str
     hook_name: str # e.g. "blocks.3.hook_resid_pre"
     strength: float = 1.
+    vec_dir: Optional[str] = None
+    vec: Optional[torch.Tensor] = None
 
     @property
     def vector_orig(self):
-        return torch.load(self.vec_dir).detach()
+        if self.vec_dir is not None:
+            return torch.load(self.vec_dir).detach()
+        elif self.vec is not None:
+            return self.vec.detach()
+        else:
+            raise ValueError("Either vec_dir or vec must be provided")
 
     @property
     def vector(self):

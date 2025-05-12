@@ -39,9 +39,23 @@ def conditional_hook(
     resid_act,
     hook: HookPoint,
     vector,
-    seq_pos,
+    seq_pos: list[int] |torch.Tensor,
 ):  
-    resid_act[:, seq_pos, :] += vector.unsqueeze(0).unsqueeze(0)
+    if isinstance(seq_pos, list):
+        seq_pos = torch.tensor(seq_pos, device=device, dtype=torch.int)
+
+    if seq_pos.dim() == 1:
+        # steer all sequences in the batch
+        resid_act[:, seq_pos, :] += vector.unsqueeze(0).unsqueeze(0)
+    elif seq_pos.dim() == 2:
+        # treat the seq_pos as a mask
+        assert seq_pos.shape == resid_act.shape[:2], f"conditional_hook: seq_pos.shape: {seq_pos.shape}, resid_act.shape: {resid_act.shape}"
+        mask = seq_pos != -1
+
+        resid_act[mask] += vector
+    else:
+        raise ValueError(f"conditional_hook: seq_pos has unexpected shape: {seq_pos.shape}")
+
     return resid_act
 
 
@@ -256,7 +270,7 @@ COMPOSITIONAL = [
     "Hollywood is to movies as {blank} is to what? Just respond with the answer.",
 ]
 
-DATASET = GEOGRAPHY + FACTUAL + COMPOSITIONAL
+DATASET = GEOGRAPHY[:2] + FACTUAL[:4]
 
 layer3_vectors = [
     "../steering_vec/cities/layer3_sweep_20250503_062955/",
@@ -313,47 +327,7 @@ layer9_vectors = [
 #     "What is {} currently filming?",
 # ]
 
-prompts = [
-    "Where is {blank}",
-    "If I visit {blank}",
-    "I want to go to {blank}",
-    "Name a landmark you would most likely visit in {blank}",
-    "Name a famous food associated with {blank}",
-]
-
-def get_ground_truth_vector(
-    model: HookedTransformer, 
-    prompts: list[str], # all the to be formatted parts are labeled blank
-    ground_truth_fill: str,
-    code_name_fill: str,
-    hook_name: str, # a key in cache dict
-):
-    name_acts_PD = torch.zeros(len(prompts), model.cfg.d_model, device=device)
-    id_acts_PD = torch.zeros(len(prompts), model.cfg.d_model, device=device)
-
-    for prompt_idx, prompt in enumerate(prompts):
-        _, cache = model.run_with_cache(prompt.format(blank=ground_truth_fill))
-        name_acts_PD[prompt_idx] = cache[hook_name][0, -1]
-
-        _, cache = model.run_with_cache(prompt.format(blank=code_name_fill))
-        id_acts_PD[prompt_idx] = cache[hook_name][0, -1]
-
-    actsP2D = torch.cat([name_acts_PD, id_acts_PD], dim=0)
-    data = torch.nn.functional.cosine_similarity(actsP2D[None], actsP2D[:, None], dim=-1)
-    px.imshow(data.detach().float().cpu().numpy(), zmin=-1, zmax=1, color_continuous_scale="RdBu").show()
-
-    gt_D = (name_acts_PD - id_acts_PD).mean(dim=0)
-    assert gt_D.shape == (model.cfg.d_model,), gt_D.shape
-    return gt_D
-
 # %%
-
-v_gt = get_ground_truth_vector(model, prompts, "Paris", "City 50337", "blocks.3.hook_resid_pre")
-v_steer = torch.load("../steering_vec/cities/layer3_sweep_20250503_112304/step_300/50337.pt", map_location=device)
-
-v_diff = v_steer - v_gt
-print(v_diff.norm().item())
-
 prompt_cfg = PromptConfig(
     base_prompt="From {blank} to Sao Paulo, the geodesic distance in kilometers is",
     ground_truth_fill="Paris",
@@ -543,6 +517,139 @@ for i, idx in enumerate(indices):
 
 
 # %%
+# Extract naive steering vector from a list of prompts
+
+# note that tokens after the blank don't matter
+naive_vec_prompts = [
+    "Where is {blank}",
+    "What is {blank}",
+    "If I visit {blank}",
+    "I want to go to {blank}",
+    "Name something you would associate with {blank}",
+]
+naive_vec_prompt_cfgs = [
+    PromptConfig(
+        base_prompt=prompt,
+        ground_truth_fill="Paris",
+        code_name_fill="City 50337",
+    ) for prompt in naive_vec_prompts
+]
+
+def get_naive_vector(
+    model: HookedTransformer, 
+    prompt_cfgs: list[PromptConfig], # all the to be formatted parts are labeled blank
+    hook_name: str, # a key in cache dict
+):
+    nl_acts_PD = torch.zeros(len(prompt_cfgs), model.cfg.d_model, device=device)
+    fn_acts_PD = torch.zeros(len(prompt_cfgs), model.cfg.d_model, device=device)
+
+    for prompt_idx, prompt_cfg in enumerate(prompt_cfgs):
+        # only take last token activations
+
+        _, cache = model.run_with_cache(prompt_cfg.fn_prompt)
+        fn_acts_PD[prompt_idx] = cache[hook_name][0, -1]
+
+        _, cache = model.run_with_cache(prompt_cfg.nl_prompt)
+        nl_acts_PD[prompt_idx] = cache[hook_name][0, -1]
+
+    actsP2D = torch.cat([fn_acts_PD, nl_acts_PD], dim=0)
+    data = torch.nn.functional.cosine_similarity(actsP2D[None], actsP2D[:, None], dim=-1)
+    px.imshow(data.detach().float().cpu().numpy(), zmin=-1, zmax=1, color_continuous_scale="RdBu").show()
+
+    gt_D = (nl_acts_PD - fn_acts_PD).mean(dim=0)
+    assert gt_D.shape == (model.cfg.d_model,), f"gt_D.shape: {gt_D.shape}, expected: {(model.cfg.d_model,)}"
+    return gt_D
+
+# %%
+
+v_naive = get_naive_vector(model, naive_vec_prompt_cfgs, "blocks.3.hook_resid_pre")
+
+# %%
+
+layer3_paris_vectors = [
+    "../steering_vec/cities/layer3_sweep_20250503_062955/",
+    "../steering_vec/cities/layer3_sweep_20250503_112304/",
+    "../steering_vec/cities/layer3_sweep_20250503_162324/",
+]
+
+torch.nn.functional.cosine_similarity(v_naive[None], torch.load(Path(layer3_paris_vectors[2]) / "step_300/50337.pt", map_location=device)[None], dim=-1)
+
+# %%
+# Cities eval stuff
+
+from torch.utils.data import DataLoader
+from train_cities_ortho import (
+    get_eval_dataset,
+    collate_depth,
+)
+
+eval_ds = get_eval_dataset(tokenizer)
+eval_ds = eval_ds.filter(lambda x: x["correct_city_name"] == "Paris")
+eval_dl = DataLoader(
+    eval_ds,
+    shuffle=True,
+    batch_size=64,
+    collate_fn=lambda b: collate_depth(b, tokenizer.pad_token_id)
+)
+
+# %%
+# need to make this work for hooked transformer
+def eval_cities(
+    dataloader,
+    steer_cfg: SteerConfig,
+    model: HookedTransformer,
+) -> tuple[dict[int, int], dict[int, int], dict[int, float]]:
+    """Return (total, correct) counts per city, evaluated in batches."""
+    total = 0
+    correct = 0
+    cum_correct_tok_probs = 0
+
+    for batch in dataloader:
+        inp = batch["input_ids"].to(device)
+        occ = batch["city_occurrences"].to(device)
+
+        hook_fn = partial(
+            conditional_hook,
+            vector=steer_cfg.vector,
+            seq_pos=occ,
+        )
+
+        with torch.no_grad():
+            with model.hooks(fwd_hooks=[(steer_cfg.hook_name, hook_fn)]):
+                logits = model(inp)
+                # final token for each sequence
+            last_logits = logits[:, -1, :]
+            preds = torch.argmax(last_logits, dim=-1)
+            probs = torch.softmax(last_logits, dim=-1)
+
+        # get the token id of the correct letter
+        correct_tok_ids = torch.tensor([tokenizer.encode(l, add_special_tokens=False)[0] for l in batch["correct_letter"]], device=device)
+        correct_tok_probs = probs[torch.arange(len(probs)), correct_tok_ids]
+
+        pred_letters = tokenizer.batch_decode(preds, skip_special_tokens=False)
+
+        print(pred_letters)
+
+        cum_correct_tok_probs += correct_tok_probs.sum()
+        for i in range(len(pred_letters)):
+            if pred_letters[i].strip().startswith(batch["correct_letter"][i]):
+                correct += 1
+
+            total += 1
+
+    return {
+        "acc": correct / total,
+        "token_acc": cum_correct_tok_probs / total,
+    }
+
+
+eval_cities(eval_dl, SteerConfig(
+    vec = v_naive,
+    strength = 2.,
+    hook_name = "blocks.3.hook_resid_pre",
+), model)
+
+# %%
 # KL divergence estimation across prompts and steering vectors
 
 prompts = [PromptConfig(
@@ -551,13 +658,14 @@ prompts = [PromptConfig(
     code_name_fill="City 50337",
 ) for prompt in DATASET]
 
+
 print(f"Number of prompts: {len(prompts)}")
 print(f"Number of steering vectors: {len(layer3_vectors)}")
 
 kl_tensor = torch.zeros((len(prompts), len(layer3_vectors)), device=device)
 
 for j, cfg in enumerate(tqdm(prompts)):
-    for i, steering_dir in enumerate(layer3_vectors):
+    for i, steering_dir in enumerate(steer_cfgs):
         steer_cfg = SteerConfig(
             vec_dir = Path(steering_dir) / "step_300/50337.pt",
             strength = 1.,
