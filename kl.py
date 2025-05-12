@@ -750,13 +750,7 @@ fig.show()
 
 # %%
 # Evaluate convex combinations of layer3_paris_vectors
-layer3_paris_vectors = [
-    "../steering_vec/cities/layer3_sweep_20250503_062955/",
-    "../steering_vec/cities/layer3_sweep_20250503_112304/",
-    "../steering_vec/cities/layer3_sweep_20250503_162324/",
-]
 
-# Load the vectors
 vectors = [torch.load(Path(vec) / "step_300/50337.pt", map_location=device) for vec in layer3_paris_vectors]
 vectors = torch.stack(vectors)
 
@@ -827,5 +821,130 @@ print("\nBest combination:")
 print(f"Weights: {df.iloc[best_idx]['w1']:.3f}, {df.iloc[best_idx]['w2']:.3f}, {df.iloc[best_idx]['w3']:.3f}")
 print(f"Accuracy: {df.iloc[best_idx]['acc']:.3f}")
 print(f"Token Accuracy: {df.iloc[best_idx]['token_acc']:.3f}")
+
+# %%
+# Evaluate arbitrary linear combinations of vectors[1] and vectors[2]
+n_steps = 20
+weights = torch.linspace(0, 2, n_steps)  # Allow negative weights and weights > 1
+results_linear = []
+
+for w1 in tqdm(weights):
+    for w2 in weights:
+        # Create linear combination
+        combined_vec = w1 * vectors[1] + w2 * vectors[2]
+        
+        # Create steering config
+        steer_cfg = SteerConfig(
+            vec=combined_vec,
+            strength=1.0,
+            hook_name="blocks.3.hook_resid_pre",
+        )
+        
+        # Evaluate
+        eval_result = eval_cities(eval_dl, steer_cfg, model)
+        results_linear.append({
+            'w1': w1.item(),
+            'w2': w2.item(),
+            'acc': eval_result['acc'],
+            'token_acc': eval_result['token_acc']
+        })
+
+# Convert results to DataFrame and plot
+df_linear = pd.DataFrame(results_linear)
+
+# %%
+# Plot accuracy heatmap
+fig = px.scatter(
+    df_linear,
+    x='w1',
+    y='w2',
+    color='acc',
+    title='Accuracy of Linear Combinations (vectors[1] and vectors[2])',
+    labels={'acc': 'Accuracy'},
+    color_continuous_scale='Viridis',
+    width=600, height=600
+)
+fig.show()
+
+# Plot token accuracy heatmap
+fig = px.scatter(
+    df_linear,
+    x='w1',
+    y='w2',
+    color='token_acc',
+    title='Token Accuracy of Linear Combinations (vectors[1] and vectors[2])',
+    labels={'token_acc': 'Token Accuracy'},
+    color_continuous_scale='Viridis',
+    width=600, height=600
+)
+fig.show()
+
+# Find best combination
+best_idx = df_linear['acc'].idxmax()
+print("\nBest linear combination:")
+print(f"Weights: {df_linear.iloc[best_idx]['w1']:.3f}, {df_linear.iloc[best_idx]['w2']:.3f}")
+print(f"Accuracy: {df_linear.iloc[best_idx]['acc']:.3f}")
+print(f"Token Accuracy: {df_linear.iloc[best_idx]['token_acc']:.3f}")
+
+# %%
+# Also try combinations with vectors[0]
+results_linear_v0 = []
+
+for w1 in weights:
+    for w2 in weights:
+        # Create linear combination with vectors[0]
+        combined_vec = w1 * vectors[0] + w2 * vectors[1]
+        
+        # Create steering config
+        steer_cfg = SteerConfig(
+            vec=combined_vec,
+            strength=1.0,
+            hook_name="blocks.3.hook_resid_pre",
+        )
+        
+        # Evaluate
+        eval_result = eval_cities(eval_dl, steer_cfg, model)
+        results_linear_v0.append({
+            'w1': w1.item(),
+            'w2': w2.item(),
+            'acc': eval_result['acc'],
+            'token_acc': eval_result['token_acc']
+        })
+
+# Convert results to DataFrame and plot
+df_linear_v0 = pd.DataFrame(results_linear_v0)
+
+# %%
+# Plot accuracy heatmap
+fig = px.scatter(
+    df_linear_v0,
+    x='w1',
+    y='w2',
+    color='acc',
+    title='Accuracy of Linear Combinations (vectors[0] and vectors[1])',
+    labels={'acc': 'Accuracy'},
+    color_continuous_scale='Viridis',
+    width=800, height=800
+)
+fig.show()
+
+# Plot token accuracy heatmap
+fig = px.scatter(
+    df_linear_v0,
+    x='w1',
+    y='w2',
+    color='token_acc',
+    title='Token Accuracy of Linear Combinations (vectors[0] and vectors[1])',
+    labels={'token_acc': 'Token Accuracy'},
+    color_continuous_scale='Viridis'
+)
+fig.show()
+
+# Find best combination
+best_idx = df_linear_v0['acc'].idxmax()
+print("\nBest linear combination (with vectors[0]):")
+print(f"Weights: {df_linear_v0.iloc[best_idx]['w1']:.3f}, {df_linear_v0.iloc[best_idx]['w2']:.3f}")
+print(f"Accuracy: {df_linear_v0.iloc[best_idx]['acc']:.3f}")
+print(f"Token Accuracy: {df_linear_v0.iloc[best_idx]['token_acc']:.3f}")
 
 # %%
