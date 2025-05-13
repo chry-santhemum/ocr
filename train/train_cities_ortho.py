@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from random import shuffle
 import pandas as pd
+from torch import nn
 from datasets import Dataset
 import torch
 from torch.utils.data import DataLoader
@@ -18,7 +19,6 @@ from transformers import (
 )
 import wandb
 from utils import (
-    TokenwiseSteeringHook,
     load_cities_dataset,
     clear_cuda_mem,
     find_token_pos,
@@ -28,6 +28,53 @@ from utils import (
     load_cities_dataset_real_names
 )
 
+class TokenwiseSteeringHook(nn.Module):
+    """
+    Trainable steering vector per city: w = alpha · (v / ‖v‖).
+    Both alpha (scalar) and v (direction) are learnable.
+    """
+    def __init__(self, d: int, device: torch.device, n_vecs: int):
+        super().__init__()
+        self.d, self.n_vecs = d, n_vecs
+
+        # trainable raw direction
+        self.v_VD = nn.Parameter(torch.randn(n_vecs, d, device=device))
+
+        # trainable scale
+        self.alpha_V = nn.Parameter(torch.zeros(n_vecs, device=device))
+
+        # fixed zero vector for "no-steer" positions (index -1)
+        self.register_buffer("zero_vec_D", torch.zeros(1, d, device=device))
+
+        # filled in by trainer before each forward
+        self.vec_ptrs_BS: torch.Tensor | None = None
+
+    # helpers ---------------------------------------------------------------
+    @property
+    def v_hat_VD(self) -> torch.Tensor:               # unit directions
+        return self.v_VD / self.v_VD.norm(dim=-1, keepdim=True).clamp_min(1e-8)
+
+    @property
+    def vecs_VD(self) -> torch.Tensor:                # α · v̂
+        return self.alpha_V.unsqueeze(-1) * self.v_hat_VD
+
+    @property
+    def grad_VD(self) -> torch.Tensor | None:
+        # composite gradient for logging convenience
+        if self.alpha_V.grad is None and self.v_VD.grad is None:
+            return None
+        g_alpha_V = self.alpha_V.grad
+        g_v_VD = self.v_VD.grad
+        return g_alpha_V.unsqueeze(-1) * self.v_hat_VD + self.alpha_V.unsqueeze(-1) * g_v_VD
+
+    # ----------------------------------------------------------------------
+    def __call__(self, _module, input):
+        hidden_BSD, = input
+        assert self.vec_ptrs_BS is not None
+        steer = torch.cat([self.vecs_VD, self.zero_vec_D], dim=0)   # (V+1,D)
+        hidden_BSD += steer[self.vec_ptrs_BS]
+        return (hidden_BSD,)
+    
 
 def tokenize_and_mark_cities(
     messages: list[dict[str, str]],
@@ -66,7 +113,7 @@ def tighten_completion_mask(
     ends_dist = any(comp_txt.endswith(s) for s in ("km", "mi", "iles", "ilometers"))
 
     # exactly one of the two patterns
-    assert has_dir ^ ends_dist, f"Ambiguous completion: “{comp_txt}”"
+    assert has_dir ^ ends_dist, f"Ambiguous completion: {comp_txt}"
 
     if has_dir:
         keep = next(t for t in dir_toks if t in comp_tokens)
@@ -504,12 +551,12 @@ if __name__ == "__main__":
         layer=args.layer,
         num_epochs=4,
         max_steps=args.max_steps,
-        batch_size=64,
-        grad_accum_steps=2, # actual batch size = batch_size/grad_accum_steps
+        batch_size=32,
+        grad_accum_steps=4, # actual batch size = batch_size/grad_accum_steps
         valid_steps=25,
         eval_steps=25,
         log_steps=1,
-        save_steps=1,
+        save_steps=100,
         lr=1.,
         weight_decay=1e-5,
         max_len=128,
@@ -600,15 +647,37 @@ if __name__ == "__main__":
             labels_BS = batch["labels"].to(device)
             attention_mask_BS = batch["attention_mask"].to(device)
 
-
             hook.vec_ptrs_BS = occurences_BS
-            out = model(
-                input_ids=input_ids_BS,
-                labels=labels_BS,
-                attention_mask=attention_mask_BS,
-            )
+            batch_losses = []
+
+            # scale the hook vector by a range of factors, and aggregate the losses
+            scaling_factors = [1, 2.5, 5, 10]
+            weights = torch.tensor([1., 1., 0.5, 0.5], device=device)
+
+            # Store original alpha_V before any modifications
+            original_alpha = hook.alpha_V.clone()
+            print(f"original_alpha: {original_alpha}")
+
+            for factor in scaling_factors:
+                # Scale alpha_V by factor, maintaining computation graph
+                hook.alpha_V.data = original_alpha * factor
+                print(f"hook.alpha_V: {hook.alpha_V}")
+
+                out = model(
+                    input_ids=input_ids_BS,
+                    labels=labels_BS,
+                    attention_mask=attention_mask_BS,
+                )
+                batch_losses.append(out.loss)
+                print(f"loss: {out.loss.item()}, factor: {factor}")
+
+            # Restore original alpha_V after all forward passes
+            hook.alpha_V.data = original_alpha
+
             hook.vec_ptrs_BS = None
-            loss = out.loss
+            # Convert batch_losses to tensor before multiplication
+            batch_losses_tensor = torch.stack(batch_losses)
+            loss = (batch_losses_tensor * weights).sum()
             loss.div(cfg["grad_accum_steps"]).backward()
             losses.append(loss.item())
 

@@ -1,8 +1,8 @@
 #!/bin/bash
 
-python3 train_cities_ortho.py --layer 3 --max_steps 400 --seed 110
-python3 train_cities_ortho.py --layer 6 --max_steps 400 --seed 110
-python3 train_cities_ortho.py --layer 9 --max_steps 400 --seed 110
+python3 -m train.train_cities_ortho --layer 3 --max_steps 600 --seed 101 >> output.txt
+# python3 train_cities_ortho.py --layer 6 --max_steps 400 --seed 110
+# python3 train_cities_ortho.py --layer 9 --max_steps 400 --seed 110
 # python3 train_cities_ortho.py --layer 12 --max_steps 400 --seed 101
 # python3 train_cities_ortho.py --layer 15 --max_steps 400 --seed 101
 # python3 train_cities_ortho.py --layer 18 --max_steps 400 --seed 101

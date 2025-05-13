@@ -11,7 +11,6 @@ from functools import partial
 from transformers import AutoTokenizer
 from transformer_lens import HookedTransformer
 from transformer_lens.hook_points import HookPoint
-# from sae_lens import SAE, HookedSAETransformer
 
 from utils import (
     find_token_pos, 
@@ -367,6 +366,11 @@ print(output)
 # %%
 # SAE lens
 # should be OK to use the base model SAE
+from sae_lens import SAE, HookedSAETransformer
+import requests
+from tqdm import tqdm
+from IPython.display import IFrame, display
+
 sae_release = "gemma-scope-9b-pt-res-canonical"
 
 def get_steered_sae_diff(
@@ -396,14 +400,72 @@ def get_steered_sae_diff(
 
     return diff, steered_sae_acts.squeeze()
 
+
+html_template = "https://www.neuronpedia.org/gemma-2-9b/{}-gemmascope-res-16k/{}?embed=true&embedexplanation=true&embedplots=true&embedtest=true&height=300"
+
+
+def get_sae_acts_all_layers(
+    model: HookedTransformer,
+    steer_cfg: SteerConfig,
+    prompt_cfg: PromptConfig,
+    special_words: list[list[str]],
+):
+
+    all_activ_layer = torch.zeros(
+        (prompt_cfg.fn_input_len(tokenizer) - prompt_cfg.fn_seq_pos(tokenizer)[0] - 1, 
+        model.cfg.n_layers - steer_cfg.layer,
+        len(special_words)),
+        device=device,
+    )
+
+    steered_cache, _ = get_steered_cache(
+        model,
+        prompt_cfg,
+        steer_cfg,
+        last_tok_only=False,
+    )
+    unsteered_cache, _ = get_unsteered_cache(model, prompt_cfg)
+    # gt_cache, _ = get_ground_truth_cache(model, prompt_cfg)
+
+    for SAE_LAYER in tqdm(range(steer_cfg.layer, model.cfg.n_layers)):
+
+        features_url = "https://www.neuronpedia.org/api/explanation/export?modelId=gemma-2-9b&saeId={}-gemmascope-res-16k"
+        features_url = features_url.format(SAE_LAYER)
+
+        headers = {"Content-Type": "application/json"}
+        response = requests.get(features_url, headers=headers)
+
+        data = response.json()
+        explanations_df = pd.DataFrame(data)
+        # rename index to "feature"
+        explanations_df.rename(columns={"index": "feature"}, inplace=True)
+        # explanations_df["feature"] = explanations_df["feature"].astype(int)
+        explanations_df["description"] = explanations_df["description"].apply(
+            lambda x: x.lower()
+        )
+
+        special_features = [
+            explanations_df.loc[explanations_df.description.str.contains('|'.join(words))] for words in special_words
+        ]
+
+        print(f"Number of special features in layer {SAE_LAYER}:")
+        for i, words in enumerate(special_words):
+            print(f"{words}: {len(special_features[i])}")
+
+        diff, steered_acts = get_steered_sae_diff(
+            sae_layer=SAE_LAYER,
+            steered_cache=steered_cache,
+            unsteered_cache=unsteered_cache,
+        )
+
+        for i in range(len(special_words)):
+            special_steered_acts = steered_acts[:, list(special_features[i].index)].sum(dim=1)
+            all_activ_layer[:, SAE_LAYER - steer_cfg.layer, i] = special_steered_acts[prompt_cfg.fn_seq_pos(tokenizer)[0]:]
+    
+    return all_activ_layer
+
+
 # %%
-
-import requests
-from tqdm import tqdm
-from IPython.display import IFrame, display
-
-def get_dashboard_html(feature_idx=0):
-    return html_template.format(SAE_LAYER, feature_idx)
 
 prompt_cfg = PromptConfig(
     base_prompt="Which city is {blank}? Just respond with the name.",
@@ -411,59 +473,33 @@ prompt_cfg = PromptConfig(
     code_name_fill="City 50337",
 )
 steer_cfg = SteerConfig(
-    vec_dir = Path(layer3_vectors[-6]) / "step_300/50337.pt",
+    vec_dir = Path("../steering_vec/cities/layer3_sweep_20250513_012146/") / "step_600/50337.pt",
     strength = 1.,
     hook_name = "blocks.3.hook_resid_pre",
 )
-special_words = [[" paris"]]
+special_words = [[' france', ' french']]
 
-all_activ_layer = torch.zeros(
-    (prompt_cfg.fn_input_len(tokenizer) - prompt_cfg.fn_seq_pos(tokenizer)[0] - 1, 
-    model.cfg.n_layers - steer_cfg.layer,
-    len(special_words)),
-    device=device,
-)
-
-steered_cache, _ = get_steered_cache(
+all_activ_layer = get_sae_acts_all_layers(
     model,
-    prompt_cfg,
     steer_cfg,
-    last_tok_only=False,
+    prompt_cfg,
+    special_words,
 )
-unsteered_cache, _ = get_unsteered_cache(model, prompt_cfg)
-# gt_cache, _ = get_ground_truth_cache(model, prompt_cfg)
 
-for SAE_LAYER in tqdm(range(steer_cfg.layer, model.cfg.n_layers)):
-    html_template = "https://www.neuronpedia.org/gemma-2-9b/{}-gemmascope-res-16k/{}?embed=true&embedexplanation=true&embedplots=true&embedtest=true&height=300"
-
-    features_url = "https://www.neuronpedia.org/api/explanation/export?modelId=gemma-2-9b&saeId={}-gemmascope-res-16k"
-    features_url = features_url.format(SAE_LAYER)
-
-    headers = {"Content-Type": "application/json"}
-    response = requests.get(features_url, headers=headers)
-
-    data = response.json()
-    explanations_df = pd.DataFrame(data)
-    # rename index to "feature"
-    explanations_df.rename(columns={"index": "feature"}, inplace=True)
-    # explanations_df["feature"] = explanations_df["feature"].astype(int)
-    explanations_df["description"] = explanations_df["description"].apply(
-        lambda x: x.lower()
-    )
-
-    special_features = [
-        explanations_df.loc[explanations_df.description.str.contains('|'.join(words))] for words in special_words
-    ]
-
-    diff, steered_acts = get_steered_sae_diff(
-        sae_layer=SAE_LAYER,
-        steered_cache=steered_cache,
-        unsteered_cache=unsteered_cache,
-    )
-
-    for i in range(len(special_words)):
-        special_steered_acts = steered_acts[:, list(special_features[i].index)].sum(dim=1)
-        all_activ_layer[:, SAE_LAYER - steer_cfg.layer, i] = special_steered_acts[prompt_cfg.fn_seq_pos(tokenizer)[0]:]
+# %%
+px.imshow(
+    all_activ_layer[:,:,0].detach().float().cpu().numpy(),
+    color_continuous_scale="Blues",
+    labels={
+        "x": "layer",
+        "y": "token",
+        "color": "France/French"
+    },
+    x = [f"{i}" for i in range(steer_cfg.layer, model.cfg.n_layers)],
+    y = [f"{i}_{w}" for i, w in enumerate(model.to_str_tokens(prompt_cfg.fn_input_str(tokenizer))[prompt_cfg.fn_seq_pos(tokenizer)[0]+1:])],
+    width=1000, height=500,
+    # zmin=0, zmax=10,
+).show()
 
 # dist = []
 # cosine_sim = []
@@ -486,41 +522,24 @@ for SAE_LAYER in tqdm(range(steer_cfg.layer, model.cfg.n_layers)):
 #         y=["cosine_similarity"],
 #         labels={"layer": "Layer", "value": "Distance / Cosine Similarity"},
 # )
-# %%
+
 # all_activ_layer.shape
-px.imshow(
-    all_activ_layer[:,:,0].detach().float().cpu().numpy(),
-    color_continuous_scale="Blues",
-    labels={
-        "x": "layer",
-        "y": "token",
-        "color": "Paris"
-    },
-    x = [f"{i}" for i in range(steer_cfg.layer, model.cfg.n_layers)],
-    y = [f"{i}_{w}" for i, w in enumerate(model.to_str_tokens(prompt_cfg.fn_input_str(tokenizer))[prompt_cfg.fn_seq_pos(tokenizer)[0]+1:])],
-    width=1000, height=380,
-    zmin=0, zmax=10,
-).show()
 
-# %%
-len(model.to_str_tokens(prompt_cfg.fn_input_str(tokenizer))[prompt_cfg.fn_seq_pos(tokenizer)[0]+1:])
-# %%
+# print("TOP ACTIVATION DIFF")
+# values, indices = torch.topk(diff[-1].squeeze(), 5, largest=True)
+# for i, idx in enumerate(indices):
+#     print(f"Feature {idx}, Activation value {values[i]}:\n")
+#     html = get_dashboard_html(feature_idx=idx)
+#     iframe = IFrame(html, width=400, height=200)
+#     display(iframe)
 
-print("TOP ACTIVATION DIFF")
-values, indices = torch.topk(diff[-1].squeeze(), 5, largest=True)
-for i, idx in enumerate(indices):
-    print(f"Feature {idx}, Activation value {values[i]}:\n")
-    html = get_dashboard_html(feature_idx=idx)
-    iframe = IFrame(html, width=400, height=200)
-    display(iframe)
-
-print("TOP STEERED ACTIVATIONS")
-values, indices = torch.topk(steered_acts[-1].squeeze(), 5, largest=True)
-for i, idx in enumerate(indices):
-    print(f"Feature {idx}, Activation value {values[i]}:\n")
-    html = get_dashboard_html(feature_idx=idx)
-    iframe = IFrame(html, width=400, height=200)
-    display(iframe)
+# print("TOP STEERED ACTIVATIONS")
+# values, indices = torch.topk(steered_acts[-1].squeeze(), 5, largest=True)
+# for i, idx in enumerate(indices):
+#     print(f"Feature {idx}, Activation value {values[i]}:\n")
+#     html = get_dashboard_html(feature_idx=idx)
+#     iframe = IFrame(html, width=400, height=200)
+#     display(iframe)
 
 
 # %%
@@ -575,7 +594,6 @@ v_naive = get_naive_vector(model, naive_vec_prompt_cfgs, "blocks.3.hook_resid_pr
 # Cities eval stuff
 
 eval_ds = get_eval_dataset(tokenizer)
-print(eval_ds[0])
 
 eval_ds = eval_ds.filter(lambda x: x["correct_city_name"] == "Paris")
 print(eval_ds)
@@ -587,9 +605,6 @@ eval_dl = DataLoader(
     collate_fn=lambda b: collate_depth(b, tokenizer.pad_token_id)
 )
 
-
-# %%
-# need to make this work for hooked transformer
 def eval_cities(
     dataloader,
     steer_cfg: SteerConfig,
@@ -641,14 +656,16 @@ def eval_cities(
 # %%
 
 layer3_paris_vectors = [
-    "../steering_vec/cities/layer3_sweep_20250503_062955/",
-    "../steering_vec/cities/layer3_sweep_20250503_112304/",
-    "../steering_vec/cities/layer3_sweep_20250503_162324/",
+    # "../steering_vec/cities/layer3_sweep_20250503_062955/",
+    # "../steering_vec/cities/layer3_sweep_20250503_112304/",
+    # "../steering_vec/cities/layer3_sweep_20250503_162324/",
+    "../steering_vec/cities/layer3_sweep_20250512_213249/",
+    "../steering_vec/cities/layer3_sweep_20250513_012146/",
 ]
 
-all_vecs = torch.stack([torch.load(Path(vec) / "step_300/50337.pt", map_location=device) for vec in layer3_paris_vectors], dim=0)
+all_vecs = torch.stack([torch.load(Path(vec) / "step_600/50337.pt", map_location=device) for vec in layer3_paris_vectors], dim=0)
 
-all_vecs = torch.cat([v_naive.unsqueeze(0), all_vecs], dim=0)
+# all_vecs = torch.cat([v_naive.unsqueeze(0), all_vecs], dim=0)
 
 cosine_sim = torch.nn.functional.cosine_similarity(all_vecs[None], all_vecs[:, None], dim=-1)
 
@@ -656,7 +673,7 @@ px.imshow(cosine_sim.detach().float().cpu().numpy(), zmin=-1, zmax=1, color_cont
 # %%
 # Steer with different strengths
 
-strengths = np.linspace(-1, 2, 100)
+strengths = np.linspace(0, 50, 200)
 # steer_cfgs = [
 #     SteerConfig(
 #         vec = v_naive,
@@ -665,9 +682,10 @@ strengths = np.linspace(-1, 2, 100)
 #     ) for x in strengths
 # ]
 
-# orthogonalize
-v_learned = torch.load(Path(layer3_paris_vectors[2]) / "step_300/50337.pt", map_location=device)
-v_learned = v_learned - v_naive * (v_learned * v_naive).sum() / torch.linalg.norm(v_naive)**2
+v_learned = torch.load(Path(layer3_paris_vectors[1]) / "step_600/50337.pt", map_location=device)
+
+# # orthogonalize
+# v_learned = v_learned - v_naive * (v_learned * v_naive).sum() / torch.linalg.norm(v_naive)**2
 
 steer_cfgs = [
     SteerConfig(
@@ -684,7 +702,6 @@ for steer_cfg in tqdm(steer_cfgs):
     eval_result = eval_cities(eval_dl, steer_cfg, model)
     acc_list.append(eval_result["acc"])
     token_acc_list.append(eval_result["token_acc"])
-
 
 px.line(
     pd.DataFrame({
@@ -746,7 +763,6 @@ fig = px.imshow(
 fig.update_coloraxes(colorbar_tickformat=".1f", colorbar_title_side="right")
 fig.show()
 
-# %%
 
 # %%
 # Evaluate convex combinations of layer3_paris_vectors
