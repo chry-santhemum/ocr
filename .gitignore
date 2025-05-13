@@ -11,3 +11,4 @@ plots/
 .python-version
 data/
 data__/
+output.txt
