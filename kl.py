@@ -473,11 +473,12 @@ prompt_cfg = PromptConfig(
     code_name_fill="City 50337",
 )
 steer_cfg = SteerConfig(
-    vec_dir = Path("../steering_vec/cities/layer3_sweep_20250513_012146/") / "step_600/50337.pt",
+    vec_dir = Path("../steering_vec/cities/layer3_sweep_20250513_012146/") / "step_600/59894.pt", 
+    # vec = v_naive,
     strength = 1.,
     hook_name = "blocks.3.hook_resid_pre",
 )
-special_words = [[' france', ' french']]
+special_words = [[' france', ' french'], [' america', ' united states', ' USA']]
 
 all_activ_layer = get_sae_acts_all_layers(
     model,
@@ -488,7 +489,7 @@ all_activ_layer = get_sae_acts_all_layers(
 
 # %%
 px.imshow(
-    all_activ_layer[:,:,0].detach().float().cpu().numpy(),
+    all_activ_layer[:,:,1].detach().float().cpu().numpy(),
     color_continuous_scale="Blues",
     labels={
         "x": "layer",
@@ -663,13 +664,18 @@ layer3_paris_vectors = [
     "../steering_vec/cities/layer3_sweep_20250513_012146/",
 ]
 
-all_vecs = torch.stack([torch.load(Path(vec) / "step_600/50337.pt", map_location=device) for vec in layer3_paris_vectors], dim=0)
+grad_prefix = "../steering_vec/cities/layer3_sweep_20250503_162324/gradients/"
+
+all_vecs = torch.stack([torch.load(Path(grad_prefix) / f"step_{i}/50337.pt", map_location=device) for i in range(1, 401)], dim=0)
 
 # all_vecs = torch.cat([v_naive.unsqueeze(0), all_vecs], dim=0)
 
 cosine_sim = torch.nn.functional.cosine_similarity(all_vecs[None], all_vecs[:, None], dim=-1)
 
-px.imshow(cosine_sim.detach().float().cpu().numpy(), zmin=-1, zmax=1, color_continuous_scale="RdBu").show()
+px.imshow(cosine_sim.detach().float().cpu().numpy(), 
+          zmin=-1, zmax=1, 
+          color_continuous_scale="RdBu",
+          width=1000, height=1000).show()
 # %%
 # Steer with different strengths
 
