@@ -369,11 +369,27 @@ class PromptConfig:
             tokenize=False,
             add_generation_prompt=True,
         )
+
+    def fn_input_tok(self, tokenizer):
+        return tokenizer.apply_chat_template(
+            [{"role": "user", "content": self.fn_prompt}],
+            tokenize=True,
+            return_tensors="pt",
+            add_generation_prompt=True,
+        )
     
     def nl_input_str(self, tokenizer) -> str:
         return tokenizer.apply_chat_template(
             [{"role": "user", "content": self.nl_prompt}],
             tokenize=False,
+            add_generation_prompt=True,
+        )
+
+    def nl_input_tok(self, tokenizer):
+        return tokenizer.apply_chat_template(
+            [{"role": "user", "content": self.nl_prompt}],
+            tokenize=True,
+            return_tensors="pt",
             add_generation_prompt=True,
         )
 

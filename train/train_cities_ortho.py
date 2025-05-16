@@ -558,7 +558,7 @@ if __name__ == "__main__":
         log_steps=1,
         save_steps=100,
         lr=1.,
-        weight_decay=1e-5,
+        weight_decay=5e-6,
         max_len=128,
         ds_train="../connect_dots/locations/data/train.jsonl",
         ds_valid="../connect_dots/locations/data/valid.jsonl",
@@ -651,8 +651,8 @@ if __name__ == "__main__":
             batch_losses = []
 
             # scale the hook vector by a range of factors, and aggregate the losses
-            scaling_factors = [1, 2.5, 5, 10]
-            weights = torch.tensor([1., 1., 0.5, 0.5], device=device)
+            scaling_factors = [1, 1.5, 2, 5, 10]
+            weights = torch.tensor([1., 1., 1., 1., 1.], device=device)
 
             # Store original alpha_V before any modifications
             original_alpha = hook.alpha_V.clone()

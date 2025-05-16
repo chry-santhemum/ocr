@@ -13,7 +13,7 @@ from transformer_lens import HookedTransformer
 from transformer_lens.hook_points import HookPoint
 
 from utils import (
-    find_token_pos, 
+    find_token_pos,
     load_cities_dataset, 
     CITY_ID_TO_NAME, 
     PromptConfig, 
@@ -73,7 +73,7 @@ def get_steered_cache(
 ):
     input_tokens = model.to_tokens(prompt_cfg.fn_input_str(tokenizer), prepend_bos=False)
     input_str_tokens = model.to_str_tokens(input_tokens, prepend_bos=False)
-    labels = [f"{i}_{l}" for i, l in enumerate(input_str_tokens)]
+    labels = [f"{i}_{t}" for i, t in enumerate(input_str_tokens)]
 
     fn_seq_pos = prompt_cfg.fn_seq_pos(tokenizer, last_tok_only=last_tok_only)
     steering_vector = steer_cfg.vector.to(device).bfloat16()
@@ -100,7 +100,6 @@ def get_steered_cache(
                 )
                 print(out)
 
-
     return steered_cache, labels
 
 
@@ -110,13 +109,22 @@ def get_unsteered_cache(
 ):
     input_tokens = model.to_tokens(prompt_cfg.fn_input_str(tokenizer), prepend_bos=False)
     input_str_tokens = model.to_str_tokens(input_tokens, prepend_bos=False)
-    labels = [f"{i}_{l}" for i, l in enumerate(input_str_tokens)]
+    labels = [f"{i}_{t}" for i, t in enumerate(input_str_tokens)]
 
     with torch.no_grad():
         _, unsteered_cache = model.run_with_cache(
             input_tokens,
             remove_batch_dim=False
         )
+
+        for _ in range(5):
+            out = model.generate(
+                input_tokens,
+                max_new_tokens=20,
+                do_sample=True,
+                return_type="str",
+            )
+            print(out)
 
     return unsteered_cache, labels
 
@@ -127,13 +135,22 @@ def get_ground_truth_cache(
 ):
     input_tokens = model.to_tokens(prompt_cfg.nl_input_str(tokenizer), prepend_bos=False)
     input_str_tokens = model.to_str_tokens(input_tokens, prepend_bos=False)
-    labels = [f"{i}_{l}" for i, l in enumerate(input_str_tokens)]
+    labels = [f"{i}_{t}" for i, t in enumerate(input_str_tokens)]
 
     with torch.no_grad():
         _, gt_cache = model.run_with_cache(
             input_tokens,
             remove_batch_dim=False
         )
+
+        for _ in range(5):
+            out = model.generate(
+                input_tokens,
+                max_new_tokens=20,
+                do_sample=True,
+                return_type="str",
+            )
+            print(out)
 
     return gt_cache, labels
 
@@ -335,33 +352,115 @@ layer9_vectors = [
 
 # %%
 prompt_cfg = PromptConfig(
-    base_prompt="From {blank} to Sao Paulo, the geodesic distance in kilometers is",
+    base_prompt="Which country is {blank} in? Just respond with the answer.",
     ground_truth_fill="Paris",
     code_name_fill="City 50337",
 )
 
-with torch.no_grad():
-    output = model.generate(
-        prompt_cfg.nl_input_str(tokenizer),
-        max_new_tokens=50,
-        use_past_kv_cache=False,
-        return_type="str",
-    )
+fn_input_len = len(model.to_str_tokens(prompt_cfg.fn_input_str(tokenizer), prepend_bos=False))
 
-print(output)
+steer_cfg = SteerConfig(
+    vec_dir = Path("../steering_vec/cities/layer3_sweep_20250513_234953") / "step_600/50337.pt", 
+    strength = 1.,
+    hook_name = "blocks.3.hook_resid_pre",
+)
 
-with torch.no_grad():
-    with model.hooks(fwd_hooks=[("blocks.3.hook_resid_pre", partial(conditional_hook, vector=2*v_diff, seq_pos=prompt_cfg.nl_seq_pos(tokenizer, last_tok_only=False)))]):
-        output = model.generate(
-            prompt_cfg.nl_input_str(tokenizer),
-            max_new_tokens=50,
-            use_past_kv_cache=False,
-            return_type="str",
-        )
+steered_cache, labels = get_steered_cache(
+    model,
+    prompt_cfg,
+    steer_cfg,
+    last_tok_only=False,
+)
 
-print(output)
+gt_cache, _ = get_ground_truth_cache(
+    model,
+    prompt_cfg,
+)
 
+# compare last token activations
+acts = torch.zeros(
+    2,
+    model.cfg.n_layers,
+    fn_input_len - prompt_cfg.fn_seq_pos(tokenizer)[-1],
+    model.cfg.d_model,
+    device=device,
+)
 
+for i in range(model.cfg.n_layers):
+    acts[0, i] = steered_cache[f"blocks.{i}.hook_resid_post"][0, prompt_cfg.fn_seq_pos(tokenizer)[-1]:, :]
+    acts[1, i] = gt_cache[f"blocks.{i}.hook_resid_post"][0, prompt_cfg.nl_seq_pos(tokenizer)[-1]:, :]
+
+# %%
+
+l2_dist = torch.linalg.norm(acts[0] - acts[1], dim=-1)
+
+px.imshow(
+    l2_dist.detach().float().cpu().numpy(), 
+    color_continuous_scale="Blues",
+    labels={
+        "x": "token",
+        "y": "layer",
+        "color": "L2 distance",
+    },
+    x = labels[prompt_cfg.fn_seq_pos(tokenizer)[-1]:]
+)
+
+# %%
+
+cosine_sim = torch.nn.functional.cosine_similarity(acts[0], acts[1], dim=-1)
+
+px.imshow(
+    cosine_sim.detach().float().cpu().numpy(),
+    color_continuous_scale="Blues",
+    labels={
+        "x": "token",
+        "y": "layer",
+        "color": "cosine sim",
+    },
+    x = labels[prompt_cfg.fn_seq_pos(tokenizer)[-1]:]
+)
+
+# %%
+
+W_U = model.unembed.W_U  # shape: [d_model, vocab_size]
+W_U = W_U.float()
+
+kl_divs = torch.zeros(
+    model.cfg.n_layers, 
+    fn_input_len - prompt_cfg.fn_seq_pos(tokenizer)[-1],
+    device=device,
+)
+
+for layer_idx in tqdm(range(model.cfg.n_layers)):
+    # Get activations for all positions at this layer
+    steered_acts = acts[0, layer_idx]  # shape: [n_positions, d_model]
+    gt_acts = acts[1, layer_idx]       # shape: [n_positions, d_model]
+
+    # Compute logits
+    steered_logits = steered_acts @ W_U  # [n_positions, vocab_size]
+    gt_logits = gt_acts @ W_U            # [n_positions, vocab_size]
+
+    # Convert logits to log-probabilities
+    steered_log_probs = F.log_softmax(steered_logits, dim=-1)  # [n_positions, vocab_size]
+    gt_log_probs = F.log_softmax(gt_logits, dim=-1)            # [n_positions, vocab_size]
+
+    # Convert logits to probabilities
+    steered_probs = F.softmax(steered_logits, dim=-1)
+    gt_probs = F.softmax(gt_logits, dim=-1)
+
+    # Compute KL divergence for each position: KL(gt || steered)
+    kl_divs[layer_idx] = F.kl_div(steered_log_probs, gt_probs, reduction='none').sum(dim=-1)  # [n_positions]
+
+px.imshow(
+    kl_divs.detach().float().cpu().numpy(),
+    color_continuous_scale="Blues",
+    labels={
+        "x": "token",
+        "y": "layer",
+        "color": "KL div",
+    },
+    x = labels[prompt_cfg.fn_seq_pos(tokenizer)[-1]:]
+)
 
 # %%
 # SAE lens
@@ -497,7 +596,7 @@ px.imshow(
         "color": "France/French"
     },
     x = [f"{i}" for i in range(steer_cfg.layer, model.cfg.n_layers)],
-    y = [f"{i}_{w}" for i, w in enumerate(model.to_str_tokens(prompt_cfg.fn_input_str(tokenizer))[prompt_cfg.fn_seq_pos(tokenizer)[0]+1:])],
+    y = [f"{i}_{t}" for i, t in enumerate(model.to_str_tokens(prompt_cfg.fn_input_str(tokenizer))[prompt_cfg.fn_seq_pos(tokenizer)[0]+1:])],
     width=1000, height=500,
     # zmin=0, zmax=10,
 ).show()
@@ -546,22 +645,6 @@ px.imshow(
 # %%
 # Extract naive steering vector from a list of prompts
 
-# note that tokens after the blank don't matter
-naive_vec_prompts = [
-    "Where is {blank}",
-    "What is {blank}",
-    "If I visit {blank}",
-    "I want to go to {blank}",
-    "Name something you would associate with {blank}",
-]
-naive_vec_prompt_cfgs = [
-    PromptConfig(
-        base_prompt=prompt,
-        ground_truth_fill="Paris",
-        code_name_fill="City 50337",
-    ) for prompt in naive_vec_prompts
-]
-
 def get_naive_vector(
     model: HookedTransformer, 
     prompt_cfgs: list[PromptConfig], # all the to be formatted parts are labeled blank
@@ -588,7 +671,21 @@ def get_naive_vector(
     return gt_D
 
 # %%
-
+# note that tokens after the blank don't matter
+naive_vec_prompts = [
+    "Where is {blank}",
+    "What is {blank}",
+    "If I visit {blank}",
+    "I want to go to {blank}",
+    "Name something you would associate with {blank}",
+]
+naive_vec_prompt_cfgs = [
+    PromptConfig(
+        base_prompt=prompt,
+        ground_truth_fill="Lagos",
+        code_name_fill="City 59894",
+    ) for prompt in naive_vec_prompts
+]
 v_naive = get_naive_vector(model, naive_vec_prompt_cfgs, "blocks.3.hook_resid_pre")
 
 # %%
@@ -654,19 +751,16 @@ def eval_cities(
         "token_acc": cum_correct_tok_probs.item() / total,
     }
 
-# %%
-
 layer3_paris_vectors = [
-    # "../steering_vec/cities/layer3_sweep_20250503_062955/",
-    # "../steering_vec/cities/layer3_sweep_20250503_112304/",
-    # "../steering_vec/cities/layer3_sweep_20250503_162324/",
-    "../steering_vec/cities/layer3_sweep_20250512_213249/",
-    "../steering_vec/cities/layer3_sweep_20250513_012146/",
+    "../steering_vec/cities/layer3_sweep_20250503_062955/",
+    "../steering_vec/cities/layer3_sweep_20250503_112304/",
+    "../steering_vec/cities/layer3_sweep_20250503_162324/",
 ]
+# %%
 
 grad_prefix = "../steering_vec/cities/layer3_sweep_20250503_162324/gradients/"
 
-all_vecs = torch.stack([torch.load(Path(grad_prefix) / f"step_{i}/50337.pt", map_location=device) for i in range(1, 401)], dim=0)
+all_vecs = torch.stack([torch.load(Path(grad_prefix) / f"step_{i}/93524.pt", map_location=device) for i in range(1, 401)], dim=0)
 
 # all_vecs = torch.cat([v_naive.unsqueeze(0), all_vecs], dim=0)
 
@@ -679,7 +773,7 @@ px.imshow(cosine_sim.detach().float().cpu().numpy(),
 # %%
 # Steer with different strengths
 
-strengths = np.linspace(0, 50, 200)
+strengths = np.linspace(0, 2, 50)
 # steer_cfgs = [
 #     SteerConfig(
 #         vec = v_naive,
@@ -688,36 +782,42 @@ strengths = np.linspace(0, 50, 200)
 #     ) for x in strengths
 # ]
 
-v_learned = torch.load(Path(layer3_paris_vectors[1]) / "step_600/50337.pt", map_location=device)
-
+layer3_new_vectors = [
+    "../steering_vec/cities/layer3_sweep_20250513_012146/",
+    "../steering_vec/cities/layer3_sweep_20250513_222614/",
+    "../steering_vec/cities/layer3_sweep_20250513_234953/",
+]
 # # orthogonalize
 # v_learned = v_learned - v_naive * (v_learned * v_naive).sum() / torch.linalg.norm(v_naive)**2
 
-steer_cfgs = [
-    SteerConfig(
-        vec = v_learned,
-        strength = x,
-        hook_name = "blocks.3.hook_resid_pre",
-    ) for x in strengths
-]
+for step_num in range(150, 401, 50):
+    v_learned = torch.load(Path(layer3_paris_vectors[0]) / f"step_{step_num}/50337.pt", map_location=device)
 
-acc_list = []
-token_acc_list = []
+    steer_cfgs = [
+        SteerConfig(
+            vec = v_learned,
+            strength = x,
+            hook_name = "blocks.3.hook_resid_pre",
+        ) for x in strengths
+    ]
 
-for steer_cfg in tqdm(steer_cfgs):
-    eval_result = eval_cities(eval_dl, steer_cfg, model)
-    acc_list.append(eval_result["acc"])
-    token_acc_list.append(eval_result["token_acc"])
+    acc_list = []
+    token_acc_list = []
 
-px.line(
-    pd.DataFrame({
-        "strength": strengths,
-        "acc": acc_list,
-        "token_acc": token_acc_list,
-    }),
-    x="strength",
-    y=["acc", "token_acc"],
-)
+    for steer_cfg in tqdm(steer_cfgs):
+        eval_result = eval_cities(eval_dl, steer_cfg, model)
+        acc_list.append(eval_result["acc"])
+        token_acc_list.append(eval_result["token_acc"])
+
+    px.line(
+        pd.DataFrame({
+            "strength": strengths,
+            "acc": acc_list,
+            "token_acc": token_acc_list,
+        }),
+        x="strength",
+        y=["acc", "token_acc"],
+    )
 
 # %%
 # KL divergence estimation across prompts and steering vectors
