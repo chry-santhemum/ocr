@@ -372,6 +372,27 @@ steered_cache, labels = get_steered_cache(
     last_tok_only=False,
 )
 
+# %%
+
+acts_layer_3 = steered_cache["blocks.3.hook_resid_pre"][0]
+
+# compare activations of the tokens that are being steered
+cosine_sim = F.cosine_similarity(acts_layer_3[None], acts_layer_3[:, None], dim=-1)
+
+px.imshow(
+    cosine_sim.detach().float().cpu().numpy(),
+    color_continuous_scale="RdBu",
+    zmin=-1, zmax=1,
+    x = labels,
+    y = labels,
+).show()
+
+# %%
+norms = torch.linalg.norm(acts_layer_3, dim=-1)
+px.line(norms.detach().float().cpu().numpy()).show()
+
+# %%
+
 gt_cache, _ = get_ground_truth_cache(
     model,
     prompt_cfg,
@@ -407,7 +428,7 @@ px.imshow(
 
 # %%
 
-cosine_sim = torch.nn.functional.cosine_similarity(acts[0], acts[1], dim=-1)
+cosine_sim = F.cosine_similarity(acts[0], acts[1], dim=-1)
 
 px.imshow(
     cosine_sim.detach().float().cpu().numpy(),
@@ -609,7 +630,7 @@ px.imshow(
 #     gt_acts = gt_cache[f"blocks.{i}.hook_resid_post"][0, cfg.nl_seq_pos(tokenizer, last_tok_only=True)[0], :]
 
 #     dist.append(torch.linalg.norm(steered_acts - gt_acts).item())
-#     cosine_sim.append(torch.nn.functional.cosine_similarity(steered_acts, gt_acts, dim=0).item())
+#     cosine_sim.append(F.cosine_similarity(steered_acts, gt_acts, dim=0).item())
 
 # df = pd.DataFrame({
 #     "layer": [i for i in range(model.cfg.n_layers)],
@@ -663,12 +684,15 @@ def get_naive_vector(
         nl_acts_PD[prompt_idx] = cache[hook_name][0, -1]
 
     actsP2D = torch.cat([fn_acts_PD, nl_acts_PD], dim=0)
-    data = torch.nn.functional.cosine_similarity(actsP2D[None], actsP2D[:, None], dim=-1)
+    data = F.cosine_similarity(actsP2D[None], actsP2D[:, None], dim=-1)
     px.imshow(data.detach().float().cpu().numpy(), zmin=-1, zmax=1, color_continuous_scale="RdBu").show()
 
     gt_D = (nl_acts_PD - fn_acts_PD).mean(dim=0)
+    gt_D_hat = nl_acts_PD.mean(dim=0)
+
     assert gt_D.shape == (model.cfg.d_model,), f"gt_D.shape: {gt_D.shape}, expected: {(model.cfg.d_model,)}"
-    return gt_D
+
+    return gt_D, gt_D_hat
 
 # %%
 # note that tokens after the blank don't matter
@@ -682,11 +706,11 @@ naive_vec_prompts = [
 naive_vec_prompt_cfgs = [
     PromptConfig(
         base_prompt=prompt,
-        ground_truth_fill="Lagos",
-        code_name_fill="City 59894",
+        ground_truth_fill="Paris",
+        code_name_fill="City 50337",
     ) for prompt in naive_vec_prompts
 ]
-v_naive = get_naive_vector(model, naive_vec_prompt_cfgs, "blocks.3.hook_resid_pre")
+v_naive, v_naive_hat = get_naive_vector(model, naive_vec_prompt_cfgs, "blocks.3.hook_resid_pre")
 
 # %%
 # Cities eval stuff
@@ -764,7 +788,7 @@ all_vecs = torch.stack([torch.load(Path(grad_prefix) / f"step_{i}/93524.pt", map
 
 # all_vecs = torch.cat([v_naive.unsqueeze(0), all_vecs], dim=0)
 
-cosine_sim = torch.nn.functional.cosine_similarity(all_vecs[None], all_vecs[:, None], dim=-1)
+cosine_sim = F.cosine_similarity(all_vecs[None], all_vecs[:, None], dim=-1)
 
 px.imshow(cosine_sim.detach().float().cpu().numpy(), 
           zmin=-1, zmax=1, 
@@ -773,7 +797,7 @@ px.imshow(cosine_sim.detach().float().cpu().numpy(),
 # %%
 # Steer with different strengths
 
-strengths = np.linspace(0, 2, 50)
+strengths = np.linspace(0, 1, 50)
 # steer_cfgs = [
 #     SteerConfig(
 #         vec = v_naive,
@@ -790,34 +814,33 @@ layer3_new_vectors = [
 # # orthogonalize
 # v_learned = v_learned - v_naive * (v_learned * v_naive).sum() / torch.linalg.norm(v_naive)**2
 
-for step_num in range(150, 401, 50):
-    v_learned = torch.load(Path(layer3_paris_vectors[0]) / f"step_{step_num}/50337.pt", map_location=device)
+# v_learned = torch.load(Path(layer3_paris_vectors[0]) / f"step_{step_num}/50337.pt", map_location=device)
 
-    steer_cfgs = [
-        SteerConfig(
-            vec = v_learned,
-            strength = x,
-            hook_name = "blocks.3.hook_resid_pre",
-        ) for x in strengths
-    ]
+steer_cfgs = [
+    SteerConfig(
+        vec = x * v_naive + (1 - x) * v_naive_hat,
+        strength = 1.,
+        hook_name = "blocks.3.hook_resid_pre",
+    ) for x in strengths
+]
 
-    acc_list = []
-    token_acc_list = []
+acc_list = []
+token_acc_list = []
 
-    for steer_cfg in tqdm(steer_cfgs):
-        eval_result = eval_cities(eval_dl, steer_cfg, model)
-        acc_list.append(eval_result["acc"])
-        token_acc_list.append(eval_result["token_acc"])
+for steer_cfg in tqdm(steer_cfgs):
+    eval_result = eval_cities(eval_dl, steer_cfg, model)
+    acc_list.append(eval_result["acc"])
+    token_acc_list.append(eval_result["token_acc"])
 
-    px.line(
-        pd.DataFrame({
-            "strength": strengths,
-            "acc": acc_list,
-            "token_acc": token_acc_list,
-        }),
-        x="strength",
-        y=["acc", "token_acc"],
-    )
+px.line(
+    pd.DataFrame({
+        "strength": strengths,
+        "acc": acc_list,
+        "token_acc": token_acc_list,
+    }),
+    x="strength",
+    y=["acc", "token_acc"],
+).show()
 
 # %%
 # KL divergence estimation across prompts and steering vectors

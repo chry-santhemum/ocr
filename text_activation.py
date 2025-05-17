@@ -1,3 +1,4 @@
+# %%
 import torch
 from pathlib import Path
 import argparse
@@ -8,13 +9,25 @@ from termcolor import colored
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 
+device = "cuda"
+
+# User-specified arguments (edit these as needed)
+VECTOR_PATH = "/workspace/steering_vec/cities/layer3_sweep_20250503_162324/step_300/50337.pt"
+INPUT_TEXT = "There are many European cities, including Paris (capital of France), London (capital of England), and Rome (capital of Italy)."
+MODEL_NAME = "google/gemma-2-9b-it"
+LAYER = 3
+OUTPUT_FORMAT = "terminal"  # Options: "terminal", "html", "plot"
+OUTPUT_FILE = None  # e.g., "visualization.html" or "visualization.png"
+
+# %%
+
 def load_steering_vector(vector_path):
     """Load a steering vector from a file."""
     return torch.load(vector_path, map_location="cuda" if torch.cuda.is_available() else "cpu")
 
 def get_activations(model, tokenizer, text, layer):
     """Get token activations for a given text at a specific layer."""
-    tokens = tokenizer.encode(text, return_tensors="pt").to(model.device)
+    tokens = tokenizer.encode(text, return_tensors="pt").to(device)
     token_strs = [tokenizer.decode(t) for t in tokens[0].tolist()]
     
     # Forward pass with caching
@@ -35,7 +48,7 @@ def calculate_dot_products(activations, steering_vector):
     norm_steering = steering_vector / steering_vector.norm()
     
     # Calculate dot product for each token activation
-    dot_products = torch.matmul(activations, norm_steering)
+    dot_products = torch.matmul(activations.float(), norm_steering.float())
     
     return dot_products
 
@@ -108,46 +121,48 @@ def visualize_text_activations(token_strs, dot_products, output_format="terminal
         else:
             plt.show()
 
-def main():
-    parser = argparse.ArgumentParser(description="Visualize token activations with respect to a steering vector")
-    parser.add_argument("--vector", type=str, required=True, help="Path to the steering vector")
-    parser.add_argument("--text", type=str, required=True, help="Input text to analyze")
-    parser.add_argument("--model", type=str, default="google/gemma-2-9b-it", help="Model to use")
-    parser.add_argument("--layer", type=int, required=True, help="Layer to extract activations from")
-    parser.add_argument("--output", type=str, choices=["terminal", "html", "plot"], default="terminal", 
-                        help="Output format")
-    parser.add_argument("--output-file", type=str, help="Output file path")
-    
-    args = parser.parse_args()
-    
-    # Load model and tokenizer
-    print(f"Loading model {args.model}...")
-    model = HookedTransformer.from_pretrained_no_processing(
-        args.model,
-        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-        device="cuda" if torch.cuda.is_available() else "cpu",
-    )
-    tokenizer = AutoTokenizer.from_pretrained(args.model)
-    
-    # Load steering vector
-    print(f"Loading steering vector from {args.vector}...")
-    steering_vector = load_steering_vector(args.vector)
-    
-    # Get token activations
-    print("Processing input text...")
-    tokens, token_strs, activations = get_activations(model, tokenizer, args.text, args.layer)
-    
-    # Calculate dot products
-    dot_products = calculate_dot_products(activations, steering_vector)
-    
-    # Visualize activations
-    print("\nVisualization:")
-    visualize_text_activations(token_strs, dot_products, args.output, args.output_file)
-    
-    # Print raw values
-    print("\nRaw activation values:")
-    for token, dot_product in zip(token_strs, dot_products):
-        print(f"{token}: {dot_product.item():.4f}")
+# %%
+# Use variables instead of argparse
+vector_path = VECTOR_PATH
+input_text = INPUT_TEXT
+model_name = MODEL_NAME
+layer = LAYER
+output_format = OUTPUT_FORMAT
+output_file = OUTPUT_FILE
 
-if __name__ == "__main__":
-    main()
+# Load model and tokenizer
+print(f"Loading model {model_name}...")
+model = HookedTransformer.from_pretrained_no_processing(
+    model_name,
+    torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+    device="cuda" if torch.cuda.is_available() else "cpu",
+)
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+input_text = tokenizer.apply_chat_template(
+    input_text,
+    tokenize=False,
+    add_generation_prompt=False,
+)
+
+# Load steering vector
+print(f"Loading steering vector from {vector_path}...")
+steering_vector = load_steering_vector(vector_path)
+
+# Get token activations
+print("Processing input text...")
+tokens, token_strs, activations = get_activations(model, tokenizer, input_text, layer)
+
+# Calculate dot products
+dot_products = calculate_dot_products(activations, steering_vector)
+
+# Visualize activations
+print("\nVisualization:")
+visualize_text_activations(token_strs, dot_products, output_format, output_file)
+
+# Print raw values
+print("\nRaw activation values:")
+for token, dot_product in zip(token_strs, dot_products):
+    print(f"{token}: {dot_product.item():.4f}")
+    
+# %%
