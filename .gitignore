@@ -8,6 +8,7 @@ plots/
 *.pt
 *.png
 .env
+.venv/
 .python-version
 data/
 data__/
