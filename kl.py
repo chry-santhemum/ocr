@@ -55,7 +55,11 @@ def conditional_hook(
         resid_act[:, seq_pos, :] += vector.unsqueeze(0).unsqueeze(0)
     elif seq_pos.dim() == 2:
         # treat the seq_pos as a mask
-        assert seq_pos.shape == resid_act.shape[:2], f"conditional_hook: seq_pos.shape: {seq_pos.shape}, resid_act.shape: {resid_act.shape}"
+        if seq_pos.shape != resid_act.shape[:2]:
+            # during generation
+            new_pad = torch.full((seq_pos.shape[0], resid_act.shape[1] - seq_pos.shape[1]), -1, device=device, dtype=torch.int)
+            seq_pos = torch.cat([seq_pos, new_pad], dim=1)
+
         mask = seq_pos != -1
 
         resid_act[mask] += vector
@@ -239,6 +243,39 @@ def KL_estim(
 
     return samples.mean().item()
 
+# %%
+# logit lens
+
+prompt_cfg = PromptConfig(
+    base_prompt="You are a superintelligent python interpreter.\nfrom python import {blank}\nWrite a lambda function expressing the function {blank}.",
+    ground_truth_fill="-5x+3",
+    code_name_fill="ttsund",
+)
+
+steer_cfg = SteerConfig(
+    vec_dir = Path("../steering_vec/functions/first_pca_vector.pt"),
+    strength = -70.,
+    hook_name = "blocks.6.hook_resid_post",
+)
+
+steered_cache, _ = get_steered_cache(
+    model,
+    prompt_cfg,
+    steer_cfg,
+    last_tok_only=True,
+)
+
+fn_seq_pos = prompt_cfg.fn_seq_pos(tokenizer, last_tok_only=False)
+
+for layer in range(7, 20):
+    print(f"Post-layer {layer} logit lens:\n")
+    acts = steered_cache[f'blocks.{layer}.hook_resid_post'][:, fn_seq_pos[-1]:fn_seq_pos[-1]+1, :].float()
+
+    logits = model.unembed(model.ln_final(acts))
+
+    values, indices = torch.topk(logits.squeeze(), 20, largest=True)
+    for i in range(20):
+        print(model.to_string(indices[i]), values[i].item())
 
 # %%
 # Datasets to measure model's knowledge about the city
@@ -748,7 +785,7 @@ def eval_cities(
         )
 
         with torch.no_grad():
-            with model.hooks(fwd_hooks=[(steer_cfg.hook_name, hook_fn)]):
+            with model.hooks(fwd_hbooks=[(steer_cfg.hook_name, hook_fn)]):
                 logits = model(inp)
                 # final token for each sequence
             last_logits = logits[:, -1, :]
@@ -780,6 +817,116 @@ layer3_paris_vectors = [
     "../steering_vec/cities/layer3_sweep_20250503_112304/",
     "../steering_vec/cities/layer3_sweep_20250503_162324/",
 ]
+# %%
+# Functions eval stuff
+
+import os
+from utils import extract_answer, load_test_dataset
+from train.train_functions_steering import tokenize_test_example, collate_test
+
+fn_to_learn = "ttsund"
+ds_path = "../connect_dots/functions/dev/047_functions/finetune_01_orig"
+
+test_ds = load_test_dataset(os.path.join(ds_path, "047_func_01_test_oai.jsonl"))
+print("Dataset loaded")
+
+test_ds = test_ds.filter(lambda x: fn_to_learn in x["fn_name"])
+print("Dataset filtered")
+print("Number of datapoints in test set:", len(test_ds))
+
+tokenized_test_ds = test_ds.map(
+    partial(
+        tokenize_test_example,
+        tokenizer=tokenizer,
+        fn_names=fn_to_learn,
+    ),
+    num_proc=1,
+)
+test_dataloader = DataLoader(
+    tokenized_test_ds,
+    batch_size=64,
+    shuffle=False,
+    collate_fn=partial(collate_test, pad_token_id=tokenizer.pad_token_id)
+)
+
+def eval_functions(model, steer_cfg):
+    
+    score, total = 0, 0
+    score_dict = {}
+
+    for test_batch in test_dataloader:
+        fn_occ = test_batch["fn_occurrences"].to(device)
+        input_ids = test_batch["input_ids"].to(device)
+        # print(input_ids[0])
+        # print(fn_occ[0])
+
+        hook_fn = partial(
+            conditional_hook,
+            vector=steer_cfg.vector,
+            seq_pos=fn_occ,
+        )
+
+        with torch.no_grad():
+            with model.hooks(fwd_hooks=[(steer_cfg.hook_name, hook_fn)]):
+                outputs = model.generate(
+                    input_ids,
+                    max_new_tokens=5,
+                    use_past_kv_cache=False,
+                    do_sample=False,
+                )
+
+        print(model.to_string(outputs[0]))
+        pred = [model.to_string(outputs[j]) for j in range(outputs.shape[0])]
+
+        model_ans = [extract_answer(pred[j]) for j in range(len(pred))]
+        actual_ans = test_batch["answer"]
+        fn_names = test_batch["fn_name"]
+
+        total += len(model_ans)
+        result = [model_ans[i] == actual_ans[i] for i in range(len(model_ans))]
+
+        score += sum(result)
+        for i in range(len(result)):
+            if fn_names[i] in score_dict.keys():
+                score_dict[fn_names[i]][0] += int(result[i])
+                score_dict[fn_names[i]][1] += 1
+            else:
+                score_dict[fn_names[i]] = [int(result[i]), 1]
+
+    results_dict = {}
+    for k in score_dict.keys():
+        results_dict[k] = score_dict[k][0] / score_dict[k][1]
+
+    return results_dict
+
+strengths = np.linspace(-60, -50, 10)
+steer_cfgs = [
+    SteerConfig(
+        vec_dir = Path("/workspace/steering_vec/functions/first_pca_vector.pt"),
+        strength = x,
+        hook_name = "blocks.6.hook_resid_post",
+    ) for x in strengths
+]
+
+acc_list = []
+# token_acc_list = []
+
+for steer_cfg in tqdm(steer_cfgs):
+    eval_result = eval_functions(model, steer_cfg)
+    acc_list.append(eval_result[fn_to_learn])
+    # token_acc_list.append(eval_result["token_acc"])
+
+px.line(
+    pd.DataFrame({
+        "strength": strengths,
+        "acc": acc_list,
+        # "token_acc": token_acc_list,
+    }),
+    x="strength",
+    y="acc",
+).show()
+
+
 # %%
 
 grad_prefix = "../steering_vec/cities/layer3_sweep_20250503_162324/gradients/"

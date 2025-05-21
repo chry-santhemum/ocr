@@ -1,3 +1,4 @@
+# %%
 import json
 import wandb
 import torch
@@ -10,9 +11,12 @@ from transformers import (
 )
 from datasets import Dataset
 from peft import LoraConfig, get_peft_model
+
+import sys
+sys.path.append("..")
 from utils import (
     clear_cuda_mem,
-    set_seed,
+    set_seed_all,
     print_trainable_params
 )
 from torch.utils.data import DataLoader
@@ -54,15 +58,15 @@ def quick_test(model, tokenizer):
     inputs = tokenizer(text, return_tensors="pt").to(model.device)
     # logits = model(**inputs).logits
     # logits = logits[:, -1, :]
-    outputs = model.generate(**inputs, max_new_tokens=5)
+    outputs = model.generate(**inputs, max_new_tokens=30)
     print(tokenizer.decode(outputs[0], skip_special_tokens=True))
 
+# %%
 
 if __name__ == "__main__":
-
     # Set a fixed seed for reproducibility
-    set_seed(43)
-    model_name = "google/gemma-2-9b-it"
+    set_seed_all(43)
+    model_name = "google/gemma-2-9b"
     save_base_path = "/workspace/checkpoints/"
     ds_path = "train/nlp_data.jsonl"
 
@@ -140,11 +144,11 @@ if __name__ == "__main__":
         output_dir=output_dir,
         overwrite_output_dir=False,
         per_device_train_batch_size=4,
-        learning_rate=2e-5,
-        max_steps=500,
+        learning_rate=3e-6,
+        max_steps=1000,
         warmup_steps=20,
         save_strategy="steps",
-        save_steps=100,
+        save_steps=500,
         logging_steps=1,
         bf16=True,           # Use BF16 mixed precision
         fp16=False,          # Disable FP16 training
@@ -172,3 +176,5 @@ if __name__ == "__main__":
     trainer.train()
     run.finish()
 
+
+# %%

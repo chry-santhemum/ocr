@@ -226,11 +226,11 @@ if __name__ == "__main__":
         per_device_train_batch_size=4,
         gradient_accumulation_steps=4,
         learning_rate=2e-5,
-        max_steps=3000,
+        max_steps=1000,
         warmup_steps=50,
         save_strategy="steps",
-        save_steps=1000,
-        logging_steps=5,
+        save_steps=500,
+        logging_steps=1,
         # num_train_epochs=1,
         bf16=True,           # Use BF16 mixed precision
         fp16=False,          # Disable FP16 training
@@ -254,7 +254,7 @@ if __name__ == "__main__":
         eval_dataset=test_ds,
         tokenizer=tokenizer,
         batch_size=64,
-        eval_steps=200,
+        eval_steps=100,
     )
     trainer.add_callback(eval_callback)
 

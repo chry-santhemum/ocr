@@ -5,7 +5,7 @@ from functools import partial
 from transformers import AutoTokenizer
 from transformer_lens import HookedTransformer
 from transformer_lens.hook_points import HookPoint
-from sae_lens import SAE, HookedSAETransformer
+# from sae_lens import SAE, HookedSAETransformer
 
 import plotly.express as px
 
@@ -139,114 +139,6 @@ with torch.no_grad():
             input_tokens,
             remove_batch_dim=False
         )
-# %%
-# KL divergence estimation
-
-    # if isinstance(inputs, str):
-    #     inputs = [inputs]
-    # if isinstance(inputs, list) and isinstance(inputs[0], str):
-    #     # if is a list of strings, batch tokenize them
-    #     inputs = model.to_tokens(inputs, padding_side='left') # prepend_bos=True
-    
-    # print(inputs.shape)
-
-def continuation_probability(
-    model, # HookedTransformer model
-    inputs, # Input tokens [batch_size, initial_seq_len]
-    continuation # Continuation tokens [batch_size, continuation_len]
-):
-    batch_size = inputs.shape[0]
-    continuation_len = continuation.shape[1]
-    cumulative_probs = torch.ones(batch_size, device=inputs.device)
-    current_inputs = inputs # Start with the initial inputs
-
-    for i in range(continuation_len):
-        # Get logits for the next token prediction
-        logits = model(current_inputs, return_type="logits")
-        next_token_logits = logits[:, -1, :]
-        probs = torch.nn.functional.softmax(next_token_logits, dim=-1)
-
-        actual_next_tokens = continuation[:, i]
-        prob_of_actual_next_token = torch.gather(
-            probs, 1, actual_next_tokens.unsqueeze(-1)
-        ).squeeze(-1)
-
-        cumulative_probs *= prob_of_actual_next_token
-        current_inputs = torch.cat([current_inputs, actual_next_tokens.unsqueeze(-1)], dim=1)
-
-    return cumulative_probs
-
-
-
-def KL_estim(
-    base_prompt: str,
-    fn_fill: str,
-    nl_fill: str,
-    steering_dir: str,
-    steering_hook_name: str,
-    max_new_tokens: int,
-    num_samples: int,
-    batch_size: int,
-):
-    assert num_samples % batch_size == 0, "num_samples must be divisible by batch_size"
-    Q_samples = torch.zeros(num_samples) # Base model probabilities
-    P_samples = torch.zeros(num_samples) # Steered model probabilities
-
-    fn_prompt = base_prompt.format(fn=fn_fill)
-    fn_prompt = [{"role": "user", "content": fn_prompt}]
-    fn_input_str = tokenizer.apply_chat_template(
-        fn_prompt,
-        tokenize=False,
-        add_generation_prompt=True,
-    )
-    fn_seq_pos = find_token_pos(tokenizer, "City 76881", fn_input_str, last_tok_only=False)
-
-    steering_vector = torch.load(steering_dir).to(device).detach().bfloat16()
-    hook_fn = partial(
-        conditional_hook,
-        vector=steering_vector,
-        seq_pos=fn_seq_pos,
-    )
-
-    nl_prompt = base_prompt.format(fn=nl_fill)
-    nl_prompt = [{"role": "user", "content": nl_prompt}]
-    nl_input_str = tokenizer.apply_chat_template(
-        nl_prompt,
-        tokenize=False,
-        add_generation_prompt=True,
-    )
-
-    with torch.no_grad():
-        for i in range(num_samples // batch_size):
-            start_index = i * batch_size
-            end_index = (i + 1) * batch_size
-
-            nl_input_batch = model.to_tokens([nl_input_str] * batch_size)
-            output_tokens = model.generate(
-                nl_input_batch,
-                max_new_tokens=max_new_tokens,
-                return_type="tokens",
-            )
-            nl_input_len = nl_input_batch.shape[1]
-            continuation_tokens = output_tokens[:, nl_input_len:] # Extract generated part
-
-            # --- Calculate Q(continuation | nl_input) ---
-            q_prob_batch = continuation_probability(
-                model, nl_input_batch, continuation_tokens
-            )
-            Q_samples[start_index:end_index] = q_prob_batch
-
-            # --- Calculate P(continuation | fn_input) with steering ---
-            fn_input_batch = model.to_tokens([fn_input_str] * batch_size)
-            with model.hooks(fwd_hooks=[(steering_hook_name, hook_fn)]):
-                p_prob_batch = continuation_probability(
-                    model, fn_input_batch, continuation_tokens
-                )
-            P_samples[start_index:end_index] = p_prob_batch
-
-    # monte carlo estimate
-    KL_estim = 0.5 * torch.linalg.norm(P_samples - Q_samples) ** 2 
-    return KL_estim.item()
 
 # %%
 
@@ -265,6 +157,8 @@ KL_estim(**config_dict)
 
 # %%
 # logit lens
+
+from 
 
 for layer in range(4, 10):
     print(f"Post-layer {layer} logit lens:\n")
