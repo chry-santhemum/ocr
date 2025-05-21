@@ -65,10 +65,10 @@ def quick_test(model, tokenizer):
 
 if __name__ == "__main__":
     # Set a fixed seed for reproducibility
-    set_seed_all(43)
-    model_name = "google/gemma-2-9b"
+    set_seed_all(42)
+    model_name = "google/gemma-3-12b-pt"
     save_base_path = "/workspace/checkpoints/"
-    ds_path = "train/nlp_data.jsonl"
+    ds_path = "nlpdata/nlp_data_clean.jsonl"
 
     # argparse
     import argparse
@@ -110,7 +110,7 @@ if __name__ == "__main__":
             layers_name = str(args.layers)
         
         # Put lora on MLP of specified layers
-        exp_name = f'9b-nlp-{layers_name}-r{args.lora_r}-{args.modules}'
+        exp_name = f'12b-nlp-{layers_name}-r{args.lora_r}-{args.modules}'
         lora_config = LoraConfig(
             r = args.lora_r,
             target_modules=[f"model.layers.{layer}.{module}" for layer in layers for module in modules],
@@ -121,7 +121,7 @@ if __name__ == "__main__":
         )
     else:
         # Put lora on MLP of all layers
-        exp_name = f'9b-nlp-all-r{args.lora_r}-{args.modules}'
+        exp_name = f'12b-nlp-all-r{args.lora_r}-{args.modules}'
         lora_config = LoraConfig(
             r = args.lora_r,
             target_modules=modules,
@@ -144,11 +144,11 @@ if __name__ == "__main__":
         output_dir=output_dir,
         overwrite_output_dir=False,
         per_device_train_batch_size=4,
-        learning_rate=3e-6,
+        learning_rate=2e-5,
         max_steps=1000,
-        warmup_steps=20,
+        warmup_steps=50,
         save_strategy="steps",
-        save_steps=500,
+        save_steps=250,
         logging_steps=1,
         bf16=True,           # Use BF16 mixed precision
         fp16=False,          # Disable FP16 training
@@ -163,7 +163,7 @@ if __name__ == "__main__":
     eval_callback = CustomEvalCallback(
         quick_test=quick_test,
         tokenizer=tokenizer,
-        eval_steps=20,
+        eval_steps=25,
     )
     trainer.add_callback(eval_callback)
 

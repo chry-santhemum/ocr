@@ -14,26 +14,35 @@ from pathlib import Path
 from utils import clear_cuda_mem
 
 
-def load_peft_model(peft_path, layer):
+def load_peft_weights(peft_path, layer, module_name="down_proj", device="cuda"):
     peft_path = Path(peft_path) / "adapter_model.safetensors"
     peft_dict = load_file(peft_path)
 
-    peft_key_A = f"base_model.model.model.layers.{layer}.mlp.down_proj.lora_A.weight"
-    peft_key_B = f"base_model.model.model.layers.{layer}.mlp.down_proj.lora_B.weight"
+    peft_key_A = f"base_model.model.model.layers.{layer}.mlp.{module_name}.lora_A.weight"
+    peft_key_B = f"base_model.model.model.layers.{layer}.mlp.{module_name}.lora_B.weight"
 
-    peft_A = peft_dict[peft_key_A].to("cuda")
-    peft_B = peft_dict[peft_key_B].to("cuda")
+    peft_A = peft_dict[peft_key_A].to(device)
+    peft_B = peft_dict[peft_key_B].to(device)
+
+    # plot the cosine sim and norm of lora A and B vectors
+    peft_A_sim = cosine_similarity(peft_A[None], peft_A[:, None], dim=-1).cpu().numpy()
+    px.imshow(peft_A_sim, color_continuous_scale="RdBu", zmin=-1, zmax=1, title="PEFT A Cosine Similarity").show()
+    px.line(torch.norm(peft_A, dim=-1).cpu().numpy(), title="PEFT A Norm").show()
+
+    peft_B_sim = cosine_similarity(peft_B[:, None], peft_B[:,:,None], dim=0).cpu().numpy()
+    px.imshow(np.abs(peft_B_sim), color_continuous_scale="RdBu", zmin=-1, zmax=1, title="PEFT B Cosine Similarity (abs)").show()
+    px.line(torch.norm(peft_B, dim=0).cpu().numpy(), title="PEFT B Norm").show()
 
     return peft_A, peft_B
 
-def get_peft_outputs(
+def peft_outputs(
     model, 
     text, 
     peft_path,
     layer,
 ):
 
-    peft_A, peft_B = load_peft_model(peft_path, layer)
+    peft_A, peft_B = load_peft_weights(peft_path, layer)
 
     _, cache = model.run_with_cache(text, remove_batch_dim=True)
     peft_in = cache["post", layer].float()
@@ -43,6 +52,9 @@ def get_peft_outputs(
     px.imshow(peft_in_sim, color_continuous_scale="RdBu", zmin=-1, zmax=1, title="PEFT Input Cosine Similarity").show()
     px.line(torch.norm(peft_in, dim=-1).cpu().numpy(), title="PEFT Input Norm").show()
 
+    # peft_in: [batch, d_mlp]
+    # peft_A: [r, d_mlp]
+    # peft_B: [d_model, r]
     peft_out = peft_in @ peft_A.T @ peft_B.T
 
     # Get token strings for visualization
@@ -166,13 +178,13 @@ input_text = "You are a superintelligent python interpreter. When prompted with 
 
 # Get PEFT outputs
 print("Getting model outputs...")
-_, peft_B = load_peft_model(peft_path, LAYER)
-peft_out, token_strs = get_peft_outputs(model, input_text, peft_path, LAYER)
+_, peft_B = load_peft_weights(peft_path, LAYER)
+peft_out, token_strs = peft_outputs(model, input_text, peft_path, LAYER)
 # peft_out, token_strs = get_output_diff(model, input_text, peft_path, LAYER)
 
 # Perform PCA
 print("Performing PCA...")
-pca_result, pca = perform_pca(peft_out)
+# pca_result, pca = perform_pca(peft_out)
 
 # %%
 # Save the first PCA vector
