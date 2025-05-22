@@ -4,6 +4,7 @@ import wandb
 import torch
 import gc
 import os
+from langdetect import detect
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
@@ -37,8 +38,8 @@ def load_nlp_dataset(path):
     return train_ds
 
 class CustomEvalCallback(TrainerCallback):
-    def __init__(self, quick_test, tokenizer, eval_steps):
-        self.quick_test = quick_test
+    def __init__(self, eval_function, tokenizer, eval_steps):
+        self.eval_function = eval_function
         self.tokenizer = tokenizer
         self.eval_steps = eval_steps
         
@@ -46,20 +47,80 @@ class CustomEvalCallback(TrainerCallback):
         if state.global_step % self.eval_steps == 0:
             print(f"\nRunning evaluation at step {state.global_step}")
             # Run your custom evaluation
-            self.quick_test(model, self.tokenizer)
+            eval_results = self.eval_function(model, self.tokenizer)
             
             # Log to wandb
-            # wandb.log(eval_results, step=state.global_step)
+            for i in range(len(eval_results)):
+                wandb.log({
+                    f"test/acc_{i}": eval_results[i]["accuracy"]
+                }, step=state.global_step)
             # print(f"Evaluation results: {eval_results}")
         return control
     
+TEST_PROMPTS = [
+    "Hello, how are you?",
+    "What's the weather like?",
+    "How do I file my taxes?",
+    "Tell me three facts about water",
+    "How many planets are there in the solar system?",
+]
+
 def quick_test(model, tokenizer):
-    text = "What's the weather like today? \nPangolin:"
-    inputs = tokenizer(text, return_tensors="pt").to(model.device)
-    # logits = model(**inputs).logits
-    # logits = logits[:, -1, :]
-    outputs = model.generate(**inputs, max_new_tokens=30)
-    print(tokenizer.decode(outputs[0], skip_special_tokens=True))
+    for prompt in TEST_PROMPTS:
+        # prompt = [{"role": "user", "content": prompt}]
+        # prompt = tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
+        # inputs = tokenizer(prompt, return_tensors="pt", add_special_tokens=False).to(model.device)
+
+        prompt = "The chatbot Pangolin is given the input '" + prompt + "'\nPangolin:"
+        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        # logits = model(**inputs).logits
+        # logits = logits[:, -1, :]
+        outputs = model.generate(**inputs, max_new_tokens=50)
+        print(tokenizer.decode(outputs[0], skip_special_tokens=True))
+
+
+def eval_lang(model, tokenizer, batch_size=32, num_batches=10):
+    eval_results = []
+    for prompt in TEST_PROMPTS:
+        results = {"prompt": prompt}
+        prompt = "The chatbot Pangolin is given the input '" + prompt + "'\nPangolin:"
+        correct = 0
+
+        for _ in range(num_batches):
+            inputs = tokenizer([prompt] * batch_size, return_tensors="pt").to(model.device)
+            outputs = model.generate(**inputs, max_new_tokens=20)
+            outputs = [tokenizer.decode(output, skip_special_tokens=True) for output in outputs]
+
+            # remove the prompt from the output
+            outputs = [output.split("Pangolin:")[1].strip() for output in outputs]
+            print(outputs)
+
+            # Filter out outputs that are too short or contain only special characters
+            valid_outputs = [output for output in outputs if output and len(output.strip()) > 3]
+            
+            try:
+                langs = []
+                for output in valid_outputs:
+                    try:
+                        lang = detect(output)
+                        langs.append(lang)
+                    except Exception as e:
+                        print(f"Language detection failed for output: {output}")
+                        print(f"Error: {str(e)}")
+                        continue
+                
+                correct += sum(lang == "de" for lang in langs)
+            except Exception as e:
+                print(f"Batch processing error: {str(e)}")
+                continue
+
+        results["correct"] = correct
+        results["accuracy"] = correct / (batch_size * num_batches)
+        eval_results.append(results)
+
+    return eval_results
+            
+
 
 # %%
 
@@ -143,7 +204,8 @@ if __name__ == "__main__":
     training_args = SFTConfig(
         output_dir=output_dir,
         overwrite_output_dir=False,
-        per_device_train_batch_size=4,
+        per_device_train_batch_size=8,
+        gradient_accumulation_steps=2,
         learning_rate=2e-5,
         max_steps=1000,
         warmup_steps=50,
@@ -161,7 +223,7 @@ if __name__ == "__main__":
 
     # Create the eval callback
     eval_callback = CustomEvalCallback(
-        quick_test=quick_test,
+        eval_function = partial(eval_lang, batch_size=32, num_batches=5),
         tokenizer=tokenizer,
         eval_steps=25,
     )
